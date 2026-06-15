@@ -436,9 +436,75 @@
     #video-panel { height: 180px; }
     .call-modal-actions { gap: 20px; }
   }
+
+  /* ─── INTRO / MANIFESTO SPLASH ───────────────────────────────────────────── */
+  #intro {
+    position: fixed; inset: 0; z-index: 200;
+    display: flex; align-items: center; justify-content: center;
+    padding: 32px; text-align: center;
+    background: radial-gradient(circle at 50% 32%, #17172a, var(--bg) 72%);
+    opacity: 0; transition: opacity .8s ease;
+  }
+  #intro.show { opacity: 1; }
+  #intro.hide { opacity: 0; pointer-events: none; }
+  .intro-inner {
+    max-width: 560px; display: flex; flex-direction: column; align-items: center; gap: 18px;
+    opacity: 0; transform: translateY(14px);
+    transition: opacity 1s ease .25s, transform 1s ease .25s;
+  }
+  #intro.show .intro-inner { opacity: 1; transform: translateY(0); }
+  .intro-logo {
+    width: 64px; height: 64px; border-radius: 16px; background: var(--accent);
+    display: flex; align-items: center; justify-content: center;
+    animation: pulse 2.4s ease-in-out infinite;
+  }
+  .intro-eyebrow {
+    color: var(--accent); font-weight: 700; font-size: .72rem;
+    text-transform: uppercase; letter-spacing: .22em;
+  }
+  .intro-title { font-size: 1.9rem; font-weight: 800; letter-spacing: -.5px; line-height: 1; }
+  .intro-lead { font-size: 1.05rem; font-weight: 600; color: var(--text); line-height: 1.5; }
+  .intro-body { font-size: .92rem; color: var(--text2); line-height: 1.75; }
+  .intro-punch { font-size: .9rem; font-weight: 700; color: var(--text); letter-spacing: .01em; }
+  .intro-quote { font-style: italic; color: var(--text); font-size: .98rem; line-height: 1.5; margin-top: 2px; }
+  .intro-quote cite { display: block; margin-top: 8px; font-style: normal; font-weight: 600; color: var(--accent); font-size: .82rem; }
+  .intro-btn { margin-top: 6px; padding: 13px 26px; width: auto; }
+  .intro-skip { font-size: .72rem; color: var(--text3); }
+  @media (max-width: 640px) {
+    .intro-title { font-size: 1.55rem; }
+    .intro-lead { font-size: .98rem; }
+    .intro-body { font-size: .86rem; }
+  }
 </style>
 </head>
 <body>
+
+<!-- ══ INTRO / MANIFESTO ════════════════════════════════════════════════════ -->
+<div id="intro" onclick="dismissIntro()">
+  <div class="intro-inner" onclick="event.stopPropagation()">
+    <div class="intro-logo">
+      <svg class="icon" width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+      </svg>
+    </div>
+    <div class="intro-eyebrow">Pure Peer-to-Peer</div>
+    <div class="intro-title">P2PChat</div>
+    <div class="intro-lead">Big Tech has commodified human connection. P2PChat restores it.</div>
+    <div class="intro-body">
+      We&rsquo;ve eliminated the middleman. By leveraging direct browser-to-browser
+      encryption, your messages never pass through a central server or feed an
+      advertising algorithm. There is no infrastructure to mine your trust, and no
+      entity to own your data.
+    </div>
+    <div class="intro-punch">No masters. No servers. No middlemen. Your conversation, finally private.</div>
+    <div class="intro-quote">
+      &ldquo;That&rsquo;s the whole revolution &mdash; and it fits in a browser tab.&rdquo;
+      <cite>&mdash; Monkey Marxist</cite>
+    </div>
+    <button class="btn btn-primary intro-btn" onclick="dismissIntro()">Enter the commons</button>
+    <div class="intro-skip">tap anywhere to continue</div>
+  </div>
+</div>
 
 <!-- ══ LOBBY ══════════════════════════════════════════════════════════════ -->
 <div id="lobby">
@@ -1691,7 +1757,26 @@ function checkSecureContext() {
   }
 }
 
+// ─── INTRO SPLASH ────────────────────────────────────────────────────────────
+let introTimer = null;
+function initIntro() {
+  const intro = document.getElementById('intro');
+  if (!intro) return;
+  // Fade in on load, then auto-fade into the lobby after a few seconds.
+  requestAnimationFrame(() => intro.classList.add('show'));
+  introTimer = setTimeout(dismissIntro, 15000);
+}
+function dismissIntro() {
+  const intro = document.getElementById('intro');
+  if (!intro || intro.classList.contains('hide')) return;
+  clearTimeout(introTimer);
+  getAudioCtx();                      // a tap here also unlocks audio for later
+  intro.classList.add('hide');
+  setTimeout(() => intro.remove(), 850);
+}
+
 document.getElementById('footer-year').textContent = new Date().getFullYear();
+initIntro();
 initPeer();
 checkSecureContext();
 </script>
