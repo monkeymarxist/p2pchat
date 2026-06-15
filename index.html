@@ -84,6 +84,56 @@
   .lobby-footer a { color: var(--text2); text-decoration: none; display: inline-flex; align-items: center; gap: 4px; }
   .lobby-footer a:hover { color: var(--accent); }
   .brand-text { display: flex; flex-direction: column; line-height: 1.05; }
+
+  /* Lobby: friendlier hero + folded-away manual join */
+  .lobby-lead { font-size: 1.15rem; font-weight: 700; letter-spacing: -.2px; }
+  .lobby-sub  { font-size: .84rem; color: var(--text2); line-height: 1.6; margin: -4px 0 2px; }
+  .id-mini {
+    display: flex; align-items: center; gap: 8px;
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 8px 10px; margin-top: 2px;
+  }
+  .id-mini-label {
+    font-size: .62rem; text-transform: uppercase; letter-spacing: .1em;
+    font-weight: 700; color: var(--text3); flex-shrink: 0;
+  }
+  .id-mini .id-text {
+    flex: 1; font-size: .76rem; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; word-break: normal;
+  }
+  .lobby-advanced { width: 100%; max-width: 400px; }
+  .lobby-advanced summary {
+    cursor: pointer; list-style: none; user-select: none;
+    font-size: .82rem; color: var(--text2);
+    display: flex; align-items: center; gap: 7px; padding: 8px 4px;
+    transition: color .15s;
+  }
+  .lobby-advanced summary:hover { color: var(--text); }
+  .lobby-advanced summary::-webkit-details-marker { display: none; }
+  .lobby-advanced summary::before {
+    content: ''; width: 7px; height: 7px; flex-shrink: 0;
+    border-right: 2px solid currentColor; border-bottom: 2px solid currentColor;
+    transform: rotate(-45deg); transition: transform .2s; margin-left: 2px;
+  }
+  .lobby-advanced[open] summary::before { transform: rotate(45deg); }
+  .advanced-body {
+    display: flex; flex-direction: column; gap: 12px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 16px; margin-top: 4px;
+  }
+  .lobby-tool {
+    background: var(--surface2); border: 1px solid var(--border); color: var(--text2);
+    padding: 10px; width: 100%; max-width: 400px;
+  }
+  .lobby-tool:hover { color: var(--text); }
+  #media-test-result {
+    font-size: .75rem; color: var(--text2); line-height: 1.45;
+    word-break: break-word; max-width: 400px; text-align: center;
+  }
+  /* Visible keyboard focus for accessibility */
+  button:focus-visible, input:focus-visible, summary:focus-visible, a:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px;
+  }
   .brand-sub {
     font-size: .6rem; font-weight: 600; letter-spacing: .02em;
     color: var(--text2); text-align: center; white-space: nowrap;
@@ -294,6 +344,15 @@
   .file-dl   { font-size: .78rem; color: var(--accent); text-decoration: none; display: inline-flex; align-items: center; gap: 3px; margin-top: 3px; }
   .file-dl:hover { text-decoration: underline; }
 
+  .empty-chat {
+    align-self: center; text-align: center; max-width: 320px;
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+    padding: 28px 16px 16px; color: var(--text2);
+  }
+  .empty-chat-icon { font-size: 1.6rem; opacity: .85; }
+  .empty-chat-title { font-weight: 700; color: var(--text); font-size: .95rem; }
+  .empty-chat-sub { font-size: .82rem; line-height: 1.6; color: var(--text3); }
+
   .system-msg {
     align-self: center; font-size: .75rem; color: var(--text3);
     background: var(--surface2); border: 1px solid var(--border);
@@ -496,7 +555,6 @@
       advertising algorithm. There is no infrastructure to mine your trust, and no
       entity to own your data.
     </div>
-    <div class="intro-punch">No masters. No servers. No middlemen. Your conversation, finally private.</div>
     <div class="intro-quote">
       &ldquo;That&rsquo;s the whole revolution &mdash; and it fits in a browser tab.&rdquo;
       <cite>&mdash; Monkey Marxist</cite>
@@ -521,50 +579,60 @@
     </div>
   </div>
 
+  <!-- Hero: the one action that matters -->
   <div class="card">
-    <div class="card-title">Your ID</div>
-    <div class="id-row">
-      <span class="id-text" id="my-id">Connecting…</span>
-      <!-- Share button (uses native share sheet on mobile, falls back to copy) -->
-      <button class="btn-icon-sm" onclick="shareId()" title="Share ID">
-        <svg class="icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
-          <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
-        </svg>
-      </button>
-    </div>
-    <div class="status-row">
-      <span class="dot" id="status-dot"></span>
-      <span id="status-txt">Connecting to PeerJS…</span>
-    </div>
+    <div class="lobby-lead">Start a private line</div>
+    <p class="lobby-sub">Send your invite link to one person. When they open it you'll get a knock — accept it, and you're talking. No account, no server, no trace.</p>
+
     <!-- One-click invite: builds a link with your ID; opening it auto-connects. -->
-    <button class="btn btn-primary" id="invite-btn" onclick="shareLink()" disabled>
+    <button class="btn btn-primary" id="invite-btn" onclick="shareLink()" disabled aria-label="Copy your invite link">
       <svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
         <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
       </svg>
       Copy invite link
     </button>
-    <button class="btn" id="test-media-btn" onclick="testMedia()"
-            style="background:var(--surface2);border:1px solid var(--border);color:var(--text2);padding:10px;width:100%">
-      <svg class="icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
-      </svg>
-      Test camera &amp; mic
-    </button>
-    <div id="media-test-result" style="font-size:.75rem;color:var(--text2);line-height:1.45;word-break:break-word"></div>
+
+    <div class="status-row">
+      <span class="dot" id="status-dot"></span>
+      <span id="status-txt">Setting up your private line…</span>
+    </div>
+
+    <!-- De-emphasised: your raw ID, for those who want it -->
+    <div class="id-mini">
+      <span class="id-mini-label">Your ID</span>
+      <span class="id-text" id="my-id">…</span>
+      <button class="btn-icon-sm" onclick="shareId()" title="Share ID" aria-label="Share your ID">
+        <svg class="icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+          <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+        </svg>
+      </button>
+    </div>
   </div>
 
-  <div class="card">
-    <div class="card-title">Connect</div>
-    <input id="peer-input" type="text" placeholder="Enter peer ID…" />
-    <button class="btn btn-primary" id="connect-btn" onclick="connectToPeer()" disabled>
-      <svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>
-      </svg>
-      Connect
-    </button>
-  </div>
+  <!-- Join manually (folded away so newcomers aren't confronted with peer IDs) -->
+  <details class="lobby-advanced">
+    <summary>Got someone's ID? Join manually</summary>
+    <div class="advanced-body">
+      <input id="peer-input" type="text" placeholder="Paste their peer ID…" aria-label="Peer ID to connect to" />
+      <button class="btn btn-primary" id="connect-btn" onclick="connectToPeer()" disabled>
+        <svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>
+        </svg>
+        Connect
+      </button>
+    </div>
+  </details>
+
+  <!-- Quiet utility -->
+  <button class="btn lobby-tool" id="test-media-btn" onclick="testMedia()" aria-label="Test camera and microphone">
+    <svg class="icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+    </svg>
+    Test camera &amp; mic
+  </button>
+  <div id="media-test-result"></div>
 
   <footer class="lobby-footer">
     © <span id="footer-year">2026</span> Monkey Marxist
@@ -682,7 +750,11 @@
     <!-- chat -->
     <div class="chat-panel">
       <div id="messages">
-        <div class="system-msg">🔒 End-to-end encrypted via WebRTC</div>
+        <div class="empty-chat">
+          <div class="empty-chat-icon">🔒</div>
+          <div class="empty-chat-title">You&rsquo;re connected &mdash; privately.</div>
+          <div class="empty-chat-sub">No server saw this handshake. Say something, send a file, or start a call.</div>
+        </div>
       </div>
 
       <div class="input-bar">
@@ -788,6 +860,14 @@ let screenStream = null, sharing = false;
 let camOn = false;                      // is a real camera currently being sent
 let camTrack = null;                    // the real camera track (when camOn)
 let blankTrack = null;                  // "Camera off" placeholder video track
+
+// Friendly starting state for the message area (reused after disconnect).
+const EMPTY_CHAT_HTML =
+  '<div class="empty-chat">' +
+    '<div class="empty-chat-icon">🔒</div>' +
+    '<div class="empty-chat-title">You’re connected — privately.</div>' +
+    '<div class="empty-chat-sub">No server saw this handshake. Say something, send a file, or start a call.</div>' +
+  '</div>';
 let videoActive = false;               // are WE sending real video (camera or screen)
 let remoteVideoActive = false;          // is the PEER sending real video
 const fileChunks = {};
@@ -848,7 +928,7 @@ function initPeer() {
     document.getElementById('my-id').textContent = id;
     document.getElementById('status-dot').classList.remove('error');
     document.getElementById('status-dot').classList.add('online');
-    document.getElementById('status-txt').textContent = 'Ready to connect';
+    document.getElementById('status-txt').textContent = 'Ready — share your invite link';
     document.getElementById('connect-btn').disabled = false;
     document.getElementById('invite-btn').disabled  = false;
     maybeAutoConnect();   // if opened via an invite link, connect automatically
@@ -914,7 +994,7 @@ function connectToPeer() {
   if (!peer || !peer.id) { showToast('Still connecting to the signalling server…'); return; }
   if (id === peer.id) { showToast("That's your own ID — share it with someone else"); return; }
   if (conn && conn.open) { showToast('Already connected'); return; }
-  document.getElementById('status-txt').textContent = 'Connecting…';
+  document.getElementById('status-txt').textContent = 'Connecting — waiting for them to accept…';
   // serialization:'raw' lets us send ArrayBuffers directly for file chunks
   conn = peer.connect(id, { reliable: true, serialization: 'raw' });
   setupDataChannel();
@@ -1023,11 +1103,10 @@ function resetToLobby(note) {
   totalBuffered = 0;
   document.getElementById('app').style.display   = 'none';
   document.getElementById('lobby').style.display = 'flex';
-  document.getElementById('messages').innerHTML  =
-    '<div class="system-msg">🔒 End-to-end encrypted via WebRTC</div>';
+  document.getElementById('messages').innerHTML  = EMPTY_CHAT_HTML;
   document.getElementById('peer-input').value = '';
   document.getElementById('status-txt').textContent =
-    (peer && peer.id) ? 'Ready to connect' : 'Connecting to PeerJS…';
+    (peer && peer.id) ? 'Ready — share your invite link' : 'Setting up your private line…';
   if (note) showToast(note);
 }
 
