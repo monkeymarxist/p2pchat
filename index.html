@@ -540,6 +540,12 @@
           <rect x="2" y="6" width="14" height="12" rx="2"/>
         </svg>
       </button>
+      <!-- end the whole session (disconnect both parties to the lobby) -->
+      <button class="action-btn red" id="btn-end-session" title="End session" onclick="endSession()">
+        <svg class="icon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
+        </svg>
+      </button>
     </div>
   </div>
 
@@ -707,12 +713,17 @@
 <script>
 // ─── STATE ──────────────────────────────────────────────────────────────────
 let peer, conn, activeCall, localStream;
-let muted = false, cameraOff = false;
+let muted = false;
 let pendingCall = null;
 let pendingConn = null;                 // incoming chat awaiting accept/decline
 let pendingMode = 'video';              // mode of the incoming call ('video'|'voice')
-let voiceMode = false;                  // true while in an audio-only call
+let voiceMode = false;                  // call was started as voice-only
 let screenStream = null, sharing = false;
+let camOn = false;                      // is a real camera currently being sent
+let camTrack = null;                    // the real camera track (when camOn)
+let blankTrack = null;                  // "Camera off" placeholder video track
+let videoActive = false;               // are WE sending real video (camera or screen)
+let remoteVideoActive = false;          // is the PEER sending real video
 const fileChunks = {};
 
 // ─── SECURITY LIMITS ─────────────────────────────────────────────────────────
@@ -895,15 +906,14 @@ function setupDataChannel() {
     if      (data.type === 'msg')       receiveMessage(data);
     else if (data.type === 'file-meta') receiveFileMeta(data);
     else if (data.type === 'file-done') receiveFileDone(data);
+    else if (data.type === 'call-end')  hangUp(false);          // peer ended/declined the call
+    else if (data.type === 'media')   { remoteVideoActive = !!data.video; updateCallView(); }
   });
 
   conn.on('close', () => {
-    appendSystem('Peer disconnected');
-    conn = null;          // allow a fresh incoming/outgoing connection
-    // Drop any half-received file buffers so they can't linger in memory.
-    for (const k in fileChunks) delete fileChunks[k];
-    totalBuffered = 0;
-    hangUp();             // tear down any in-progress call + release camera/mic
+    conn = null;          // connection is gone
+    hangUp(false);        // tear down any in-progress call + release camera/mic
+    resetToLobby('Peer disconnected — session ended');
   });
   conn.on('error', err => {
     clearTimeout(timeout);
@@ -930,6 +940,29 @@ const rawChannel = () => conn && (conn.dataChannel || conn._dc);
 function showApp() {
   document.getElementById('lobby').style.display = 'none';
   document.getElementById('app').style.display   = 'flex';
+}
+
+// User-initiated full disconnect. Closing conn notifies the peer (their
+// conn.on('close') fires) so both ends return to the lobby.
+function endSession() {
+  if (conn) { try { conn.close(); } catch {} }
+  hangUp(false);
+  resetToLobby('Session ended');
+}
+
+// Tear everything down and go back to the lobby (reusable for a fresh session).
+function resetToLobby(note) {
+  if (conn) { try { conn.close(); } catch {} conn = null; }
+  for (const k in fileChunks) delete fileChunks[k];
+  totalBuffered = 0;
+  document.getElementById('app').style.display   = 'none';
+  document.getElementById('lobby').style.display = 'flex';
+  document.getElementById('messages').innerHTML  =
+    '<div class="system-msg">🔒 End-to-end encrypted via WebRTC</div>';
+  document.getElementById('peer-input').value = '';
+  document.getElementById('status-txt').textContent =
+    (peer && peer.id) ? 'Ready to connect' : 'Connecting to PeerJS…';
+  if (note) showToast(note);
 }
 
 // ─── INVITE LINK (one-click connect) ─────────────────────────────────────────
@@ -1013,6 +1046,7 @@ function receiveMessage({ text, ts }) {
   if (text.length > MAX_MSG_CHARS) text = text.slice(0, MAX_MSG_CHARS) + '…';
   const t = Number(ts);
   appendMessage(text, false, Number.isFinite(t) ? t : Date.now());
+  notifyChime();                                          // audible incoming-message cue
 }
 
 function appendMessage(text, mine, ts) {
@@ -1148,6 +1182,7 @@ function receiveFileDone({ id }) {
   if (!info) return;
   const url = makeObjectUrl(new Blob(info.chunks, { type: info.mime }));
   appendFileBubble(info.name, info.size, url, false);
+  notifyChime();                          // audible incoming-file cue
   totalBuffered -= info.received;
   delete fileChunks[id];
 }
@@ -1220,11 +1255,13 @@ async function getMedia(mode) {
   try {
     const s = await navigator.mediaDevices.getUserMedia({ video: wantVideo, audio: true });
     cameraStatus = wantVideo ? 'camera + mic' : 'mic only';
-    return s;
+    // Even voice calls get a placeholder video lane so camera/screen-share can
+    // be switched on mid-call via replaceTrack (no renegotiation needed).
+    return ensureVideoTrack(s);
   } catch (e) {
     appendSystem('⚠️ ' + explainMediaError(e));
     cameraStatus = (e.name || 'error');
-    if (!wantVideo) return new MediaStream();   // voice call: nothing more to try
+    if (!wantVideo) return ensureVideoTrack(new MediaStream());   // voice: mic failed
     // Video call: fall back to mic-only and add a placeholder video lane.
     try {
       const a = await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
@@ -1257,7 +1294,10 @@ function makeBlankVideoTrack() {
   const stream = canvas.captureStream(8);
   clearInterval(blankTimer);
   blankTimer = setInterval(draw, 250); // keep the track producing frames
-  return stream.getVideoTracks()[0];
+  const track = stream.getVideoTracks()[0];
+  track._blank = true;                 // mark so we can tell it apart from a real camera
+  blankTrack = track;
+  return track;
 }
 
 // Lobby diagnostic: force a permission prompt and report the exact result.
@@ -1281,15 +1321,29 @@ async function testMedia() {
 
 // mode: 'video' (camera + mic) or 'voice' (mic only). The mode is sent to the
 // peer so their incoming-call prompt and answer match.
+// Derive camera/video state from the acquired stream after a call starts.
+function initVideoState() {
+  const vids = localStream ? localStream.getVideoTracks() : [];
+  camTrack   = vids.find(t => !t._blank) || null;   // a real camera track, if any
+  blankTrack = vids.find(t => t._blank) || blankTrack;
+  camOn = !!camTrack;
+  sharing = false;
+  videoActive = camOn;          // we send real video only if a camera is on
+  remoteVideoActive = false;
+}
+
 async function startCall(mode) {
   if (!conn?.open) { showToast('Not connected to a peer'); return; }
   if (activeCall) { showToast('Already in a call'); return; }
   voiceMode = (mode === 'voice');
   localStream = await getMedia(mode);
+  initVideoState();
   playInVideo('local-video', localStream);
   activeCall = peer.call(conn.peer, localStream, { metadata: { mode: voiceMode ? 'voice' : 'video' } });
   setupCallHandlers(activeCall);
   showCallUI(true);
+  signalMedia(videoActive);
+  updateCallView();
   appendSystem((voiceMode ? 'Voice' : 'Video') + ' call started — ' + cameraStatus);
 }
 
@@ -1299,40 +1353,66 @@ async function answerCall() {
   if (!pendingCall) return; // caller hung up before we answered
   voiceMode = (pendingMode === 'voice');   // match the caller's chosen mode
   localStream = await getMedia(pendingMode);
+  initVideoState();
   playInVideo('local-video', localStream);
   pendingCall.answer(localStream);
   activeCall = pendingCall;
   setupCallHandlers(activeCall);
   showCallUI(true);
+  signalMedia(videoActive);
+  updateCallView();
   appendSystem((voiceMode ? 'Voice' : 'Video') + ' call answered — ' + cameraStatus);
   pendingCall = null;
 }
 
 function rejectCall() {
+  // Tell the caller so their ringing/calling state ends too.
+  if (conn && conn.open) { try { conn.send(JSON.stringify({ type: 'call-end' })); } catch {} }
   stopRingtone();
   document.getElementById('call-modal').classList.remove('visible');
-  if (pendingCall) { pendingCall.close(); pendingCall = null; }
+  if (pendingCall) { try { pendingCall.close(); } catch {} pendingCall = null; }
   appendSystem('Call declined');
 }
 
 function setupCallHandlers(call) {
   call.on('stream', s => { playInVideo('remote-video', s); });
-  // Remote ended the call: run full teardown so our camera/mic are released too.
-  call.on('close',  () => { if (activeCall === call) hangUp(); });
-  call.on('error',  err => { showToast('Call error: ' + (err.message || err.type)); hangUp(); });
+  // Remote media link closed: tear down locally (don't re-signal — avoid a loop).
+  call.on('close',  () => { if (activeCall === call) hangUp(false); });
+  call.on('error',  err => { showToast('Call error: ' + (err.message || err.type)); hangUp(false); });
 }
 
-function hangUp() {
-  const wasActive = !!activeCall || !!localStream;
-  if (activeCall) { activeCall.close(); activeCall = null; }
+// notify=true → tell the peer over the data channel so their side ends too.
+// This is the reliable termination path (PeerJS media 'close' is unreliable).
+function hangUp(notify = true) {
+  const wasActive = !!activeCall || !!localStream || !!pendingCall;
+  if (notify && conn && conn.open && wasActive) {
+    try { conn.send(JSON.stringify({ type: 'call-end' })); } catch {}
+  }
+  stopRingtone();
+  document.getElementById('call-modal').classList.remove('visible');
+  if (pendingCall) { try { pendingCall.close(); } catch {} pendingCall = null; }
+  if (activeCall)  { try { activeCall.close();  } catch {} activeCall  = null; }
   if (screenStream) { screenStream.getTracks().forEach(t => t.stop()); screenStream = null; }
-  if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
-  clearInterval(blankTimer); blankTimer = null;
-  sharing = false;
+  if (camTrack)     { camTrack.stop(); camTrack = null; }
+  if (localStream)  { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
+  clearInterval(blankTimer); blankTimer = null; blankTrack = null;
+  sharing = false; camOn = false; videoActive = false; remoteVideoActive = false;
   document.getElementById('local-video').srcObject  = null;
   document.getElementById('remote-video').srcObject = null;
   showCallUI(false);
   if (wasActive) appendSystem('Call ended');
+}
+
+function signalMedia(on) {
+  if (conn && conn.open) { try { conn.send(JSON.stringify({ type: 'media', video: !!on })); } catch {} }
+}
+
+// Show the video panel when EITHER side is sending real video; otherwise the
+// audio-only ("voice") overlay.
+function updateCallView() {
+  const showVideo = !!activeCall && (videoActive || remoteVideoActive);
+  document.getElementById('app').classList.toggle('voice-mode', !!activeCall && !showVideo);
+  if (activeCall && !showVideo) document.getElementById('voice-peer').textContent = conn ? conn.peer : '';
 }
 
 // Attach a stream and explicitly call play() — autoplay is unreliable on iOS
@@ -1347,19 +1427,19 @@ function playInVideo(id, stream) {
 function showCallUI(active) {
   const app = document.getElementById('app');
   app.classList.toggle('in-call', active);
-  app.classList.toggle('voice-mode', active && voiceMode);
   document.getElementById('video-panel').classList.toggle('visible', active);
   // Idle call buttons show only when not in a call.
   const idleDisplay = active ? 'none' : 'flex';
   document.getElementById('btn-call-video').style.display = idleDisplay;
   document.getElementById('btn-call-voice').style.display = idleDisplay;
-  // Camera & screen-share are video-call features → hidden during a voice call.
-  document.getElementById('btn-cam').style.display    = voiceMode ? 'none' : '';
-  document.getElementById('btn-screen').style.display = voiceMode ? 'none' : '';
-  if (active && voiceMode) document.getElementById('voice-peer').textContent = conn ? conn.peer : '';
+  // Camera & screen-share are available in EVERY call now — including a voice
+  // call, so you can switch them on mid-call.
+  document.getElementById('btn-cam').style.display    = '';
+  document.getElementById('btn-screen').style.display = '';
   if (!active) {
-    app.classList.remove('show-chat');   // restore full chat when call ends
-    voiceMode = false; muted = false; cameraOff = false; sharing = false;
+    app.classList.remove('show-chat', 'voice-mode');   // restore full chat when call ends
+    voiceMode = false; muted = false; sharing = false; camOn = false;
+    videoActive = false; remoteVideoActive = false;
   }
   syncMuteUI(); syncCamUI(); syncShareUI(); syncChatUI();
 }
@@ -1401,31 +1481,19 @@ async function toggleScreenShare() {
   const screenTrack = stream.getVideoTracks()[0];
   if (!screenTrack) { showToast('No screen track available'); return; }
 
-  if (!replaceOutgoingVideo(screenTrack)) {
-    // Audio-only call had no video channel to swap into.
-    stream.getTracks().forEach(t => t.stop());
-    showToast('Turn your camera on before sharing your screen.');
-    return;
-  }
-
   screenStream = stream;
   sharing = true;
-  playInVideo('local-video', screenStream);    // preview what you're sharing
-  syncShareUI();
+  applyVideo();                       // route the screen track to the peer + preview
   appendSystem('You started sharing your screen');
 
-  // The browser’s own “Stop sharing” bar ends the track — restore camera then.
+  // The browser’s own “Stop sharing” bar ends the track — revert then.
   screenTrack.onended = () => { if (sharing) stopScreenShare(); };
 }
 
 function stopScreenShare() {
   if (screenStream) { screenStream.getTracks().forEach(t => t.stop()); screenStream = null; }
-  // Restore the camera track (if the call has one) so the peer sees you again.
-  const camTrack = localStream && localStream.getVideoTracks()[0];
-  replaceOutgoingVideo(camTrack || null);
-  playInVideo('local-video', localStream || new MediaStream());
   sharing = false;
-  syncShareUI();
+  applyVideo();                       // reverts to camera if on, otherwise placeholder
   appendSystem('You stopped sharing your screen');
 }
 
@@ -1464,18 +1532,56 @@ function syncMuteUI() {
   btn.title = muted ? 'Unmute' : 'Mute';
 }
 
-function toggleCamera() {
-  if (!localStream) return;
-  cameraOff = !cameraOff;
-  localStream.getVideoTracks().forEach(t => t.enabled = !cameraOff);
-  syncCamUI();
+// Turn the real camera on/off mid-call. Works in voice calls too (upgrades to
+// video) because every call has a video lane provisioned up front.
+async function toggleCamera() {
+  if (!activeCall) { showToast('Start a call first'); return; }
+  if (!camOn) {
+    if (!camTrack || camTrack.readyState === 'ended') {
+      if (!mediaSupported()) { showToast('Camera needs an https:// or localhost page'); return; }
+      try {
+        const s = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        camTrack = s.getVideoTracks()[0];
+      } catch (e) { appendSystem('⚠️ ' + explainMediaError(e)); return; }
+    }
+    camOn = true;
+  } else {
+    camOn = false;
+    if (camTrack) { camTrack.stop(); camTrack = null; }
+  }
+  applyVideo();
 }
 
 function syncCamUI() {
   const btn = document.getElementById('btn-cam');
-  btn.innerHTML = cameraOff ? ICO.camOff : ICO.cam;
-  btn.className = 'call-bar-btn ' + (cameraOff ? 'cam-off' : 'normal');
-  btn.title = cameraOff ? 'Turn on camera' : 'Turn off camera';
+  if (!btn) return;
+  btn.innerHTML = camOn ? ICO.cam : ICO.camOff;
+  btn.className = 'call-bar-btn ' + (camOn ? 'normal' : 'cam-off');
+  btn.title = camOn ? 'Turn off camera' : 'Turn on camera';
+}
+
+// Decide which video track to send (screen > camera > placeholder), push it to
+// the peer via replaceTrack, refresh the local preview, and tell the peer
+// whether real video is now flowing so both sides switch views together.
+function ensureBlank() {
+  if (!blankTrack || blankTrack.readyState === 'ended') blankTrack = makeBlankVideoTrack();
+  return blankTrack;
+}
+function applyVideo() {
+  let track;
+  if (sharing && screenStream)                              track = screenStream.getVideoTracks()[0];
+  else if (camOn && camTrack && camTrack.readyState === 'live') track = camTrack;
+  else                                                      track = ensureBlank();
+  replaceOutgoingVideo(track);
+  if (localStream) {
+    localStream.getVideoTracks().forEach(t => { if (t !== track) localStream.removeTrack(t); });
+    if (!localStream.getVideoTracks().includes(track)) localStream.addTrack(track);
+    playInVideo('local-video', localStream);
+  }
+  videoActive = !!(sharing || (camOn && camTrack));
+  signalMedia(videoActive);
+  updateCallView();
+  syncCamUI(); syncShareUI();
 }
 
 // ─── TOAST ───────────────────────────────────────────────────────────────────
@@ -1498,60 +1604,79 @@ const fmtSize   = b => { b = Number(b); if (!Number.isFinite(b) || b < 0) b = 0;
                          return b < 1024 ? b + ' B' : b < 1048576 ? (b/1024).toFixed(1) + ' KB' : (b/1048576).toFixed(1) + ' MB'; };
 const esc       = s => String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 
-// ─── RINGTONE (Web Audio API — no external files) ────────────────────────────
-let ringCtx = null, ringInterval = null;
+// ─── AUDIO (Web Audio API — no external files) ───────────────────────────────
+// One shared AudioContext, UNLOCKED on the first user interaction. Browsers
+// suspend audio until a gesture happens; without this, an incoming-call ring or
+// message chime would be silent because they're triggered by the network, not a
+// click. Unlocking once (on any tap/key) lets all later notifications play.
+let audioCtx = null, ringInterval = null;
+
+function getAudioCtx() {
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return null;
+  if (!audioCtx) audioCtx = new Ctx();
+  if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+  return audioCtx;
+}
+['pointerdown', 'keydown', 'touchstart'].forEach(ev =>
+  window.addEventListener(ev, () => getAudioCtx(), { once: true, passive: true }));
+
+// Short two-note chime for an incoming message or file.
+let lastChime = 0;
+function notifyChime() {
+  const ctx = getAudioCtx(); if (!ctx) return;
+  if (Date.now() - lastChime < 400) return;   // don't machine-gun on bursts
+  lastChime = Date.now();
+  const t0 = ctx.currentTime;
+  [[784, 0], [1047, 0.1]].forEach(([f, dt]) => {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = 'sine'; o.frequency.value = f;
+    g.gain.setValueAtTime(0, t0 + dt);
+    g.gain.linearRampToValueAtTime(0.14, t0 + dt + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dt + 0.22);
+    o.connect(g); g.connect(ctx.destination);
+    o.start(t0 + dt); o.stop(t0 + dt + 0.24);
+  });
+}
 
 function startRingtone() {
   stopRingtone(); // clear any previous
-  // Browsers require a user gesture before AudioContext can run.
-  // The incoming-call modal is shown after user interaction (the call button),
-  // so this is safe. We create a fresh context each time.
-  const Ctx = window.AudioContext || window.webkitAudioContext;
-  if (!Ctx) return; // no Web Audio support — skip ringtone, modal still shows
-  ringCtx = new Ctx();
-  // Mobile browsers often start the context suspended; resume best-effort.
-  if (ringCtx.state === 'suspended') ringCtx.resume().catch(() => {});
+  const ctx = getAudioCtx();
+  if (!ctx) return; // no Web Audio support — modal still shows
 
-  // Classic double-ring pattern: ring ring … pause … ring ring …
-  // Each "ring" = 440 Hz + 480 Hz mixed for ~0.4 s, gap 0.2 s, pause 2 s
+  // Classic double-ring: ring ring … pause … ring ring …
   let step = 0;
   const pattern = [
-    { dur: 0.4, on: true  },   // ring 1
-    { dur: 0.2, on: false },   // gap
-    { dur: 0.4, on: true  },   // ring 2
-    { dur: 2.0, on: false },   // pause
+    { dur: 0.4, on: true  }, { dur: 0.2, on: false },
+    { dur: 0.4, on: true  }, { dur: 2.0, on: false },
   ];
-
   function playStep() {
     const { dur, on } = pattern[step % pattern.length];
-    if (on && ringCtx) {
-      const gain = ringCtx.createGain();
-      gain.gain.setValueAtTime(0, ringCtx.currentTime);
-      gain.gain.linearRampToValueAtTime(0.18, ringCtx.currentTime + 0.01);
-      gain.gain.linearRampToValueAtTime(0.18, ringCtx.currentTime + dur - 0.02);
-      gain.gain.linearRampToValueAtTime(0,    ringCtx.currentTime + dur);
-      gain.connect(ringCtx.destination);
-
+    if (on && audioCtx) {
+      const now = audioCtx.currentTime;
+      const gain = audioCtx.createGain();
+      gain.gain.setValueAtTime(0, now);
+      gain.gain.linearRampToValueAtTime(0.18, now + 0.01);
+      gain.gain.linearRampToValueAtTime(0.18, now + dur - 0.02);
+      gain.gain.linearRampToValueAtTime(0,    now + dur);
+      gain.connect(audioCtx.destination);
       [440, 480].forEach(freq => {
-        const osc = ringCtx.createOscillator();
-        osc.type = 'sine';
-        osc.frequency.value = freq;
+        const osc = audioCtx.createOscillator();
+        osc.type = 'sine'; osc.frequency.value = freq;
         osc.connect(gain);
-        osc.start(ringCtx.currentTime);
-        osc.stop(ringCtx.currentTime + dur);
+        osc.start(now); osc.stop(now + dur);
       });
     }
     step++;
     ringInterval = setTimeout(playStep, dur * 1000);
   }
-
   playStep();
 }
 
 function stopRingtone() {
   clearTimeout(ringInterval);
   ringInterval = null;
-  if (ringCtx) { ringCtx.close().catch(() => {}); ringCtx = null; }
+  // Keep the shared audioCtx alive for reuse — just stop scheduling rings.
 }
 
 // ─── BOOT ────────────────────────────────────────────────────────────────────
