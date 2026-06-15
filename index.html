@@ -1,0 +1,1574 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>P2P Chat</title>
+
+<!-- Content-Security-Policy: defence-in-depth. The only external resource is the
+     PeerJS library (loaded from jsDelivr and pinned with Subresource Integrity).
+     connect-src is limited to the PeerJS signalling server. 'unsafe-inline' is
+     required only because the app uses inline event handlers and an inline <script>. -->
+<meta http-equiv="Content-Security-Policy" content="
+  default-src 'self';
+  base-uri 'self';
+  object-src 'none';
+  form-action 'self';
+  script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net;
+  style-src 'self' 'unsafe-inline';
+  img-src 'self' data: blob:;
+  media-src 'self' blob: mediastream:;
+  connect-src 'self' https://*.peerjs.com wss://*.peerjs.com;
+">
+
+<!-- PeerJS 1.5.4, served from jsDelivr (verbatim npm dist) and pinned with an
+     SRI hash computed from the canonical npm release. If the file is tampered
+     with — at the CDN or in transit — the browser refuses to run it. -->
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"
+        integrity="sha384-nlUQ8ZqCbvStErob+biJNzSgltf6urV3VGqhfIfzhmg9RXmpeRm76ELw0pYnKlTR"
+        crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<style>
+  :root {
+    --bg: #0d0d12;
+    --surface: #16161f;
+    --surface2: #1e1e2a;
+    --surface3: #252533;
+    --border: #2a2a3a;
+    --accent: #6c63ff;
+    --accent-dim: rgba(108,99,255,.15);
+    --green: #22c55e;
+    --green-dim: rgba(34,197,94,.15);
+    --red: #ef4444;
+    --red-dim: rgba(239,68,68,.15);
+    --amber: #f59e0b;
+    --text: #e4e4f0;
+    --text2: #7070a0;
+    --text3: #454560;
+    --radius: 14px;
+    --radius-sm: 8px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    height: 100dvh; /* correct height on mobile (excludes browser chrome) */
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ─── SVG ICONS ──────────────────────────────────────────────────────── */
+  .icon { display: block; flex-shrink: 0; }
+
+  /* ─── LOBBY ──────────────────────────────────────────────────────────── */
+  #lobby {
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    height: 100%; gap: 20px; padding: 24px;
+  }
+  .brand {
+    display: flex; align-items: center; gap: 10px;
+    font-size: 1.5rem; font-weight: 700; letter-spacing: -.5px;
+  }
+  .brand-icon {
+    width: 40px; height: 40px; border-radius: 10px;
+    background: var(--accent); display: flex; align-items: center; justify-content: center;
+  }
+  .lobby-footer {
+    margin-top: auto; padding-top: 20px;
+    font-size: .72rem; color: var(--text3); text-align: center;
+    display: flex; align-items: center; gap: 6px; justify-content: center;
+  }
+  .lobby-footer a { color: var(--text2); text-decoration: none; display: inline-flex; align-items: center; gap: 4px; }
+  .lobby-footer a:hover { color: var(--accent); }
+  .brand-text { display: flex; flex-direction: column; line-height: 1.05; }
+  .brand-sub {
+    font-size: .6rem; font-weight: 600; letter-spacing: .02em;
+    color: var(--text2); text-align: center; white-space: nowrap;
+  }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px;
+    width: 100%; max-width: 400px;
+    display: flex; flex-direction: column; gap: 14px;
+  }
+  .card-title { font-size: .8rem; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: .06em; }
+  .id-row {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 12px 14px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .id-text { flex: 1; font-family: monospace; font-size: .95rem; color: var(--accent); word-break: break-all; }
+  .status-row { display: flex; align-items: center; gap: 8px; font-size: .8rem; color: var(--text2); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text3); flex-shrink: 0; }
+  .dot.online { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .dot.error  { background: var(--red); }
+
+  input[type="text"] {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 12px 14px;
+    color: var(--text); font-size: 16px; width: 100%; outline: none;
+    transition: border-color .2s;
+  }
+  input[type="text"]:focus { border-color: var(--accent); }
+  input[type="text"]::placeholder { color: var(--text3); }
+
+  .btn {
+    cursor: pointer; border: none; border-radius: var(--radius-sm);
+    font-size: .9rem; font-weight: 600; display: flex; align-items: center;
+    justify-content: center; gap: 8px; transition: opacity .15s, filter .15s;
+  }
+  .btn:active { filter: brightness(.88); }
+  .btn:disabled { opacity: .35; cursor: default; }
+  .btn-primary { background: var(--accent); color: #fff; padding: 13px; width: 100%; }
+  .btn-icon-sm {
+    background: transparent; color: var(--text2); padding: 6px;
+    border-radius: 6px; cursor: pointer; border: none;
+    display: flex; align-items: center; justify-content: center;
+    transition: background .15s, color .15s;
+  }
+  .btn-icon-sm:hover { background: var(--surface3); color: var(--text); }
+
+  /* ─── APP SHELL ──────────────────────────────────────────────────────── */
+  #app { display: none; flex-direction: column; height: 100%; }
+
+  /* topbar */
+  .topbar {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 16px;
+    background: var(--surface); border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .avatar {
+    width: 34px; height: 34px; border-radius: 50%;
+    background: var(--accent-dim); border: 1px solid var(--accent);
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  }
+  .peer-info { flex: 1; min-width: 0; }
+  .peer-name { font-weight: 600; font-size: .9rem; }
+  .peer-sub  { font-size: .72rem; color: var(--text2); font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* call action buttons in topbar (idle state) */
+  .topbar-actions { display: flex; gap: 6px; }
+  .action-btn {
+    width: 36px; height: 36px; border-radius: 50%; border: none; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: background .15s, transform .1s;
+  }
+  .action-btn:active { transform: scale(.93); }
+  .action-btn.green { background: var(--green-dim); color: var(--green); }
+  .action-btn.green:hover { background: var(--green); color: #fff; }
+  .action-btn.slate { background: var(--surface2); color: var(--text2); }
+  .action-btn.slate:hover { background: var(--surface3); color: var(--text); }
+  .action-btn.red   { background: var(--red-dim); color: var(--red); }
+  .action-btn.red:hover { background: var(--red); color: #fff; }
+  .action-btn.active-accent { background: var(--accent-dim); color: var(--accent); }
+  .action-btn.active-accent:hover { background: var(--accent); color: #fff; }
+  .action-btn.muted { background: var(--red-dim); color: var(--red); }
+
+  /* ─── BODY ───────────────────────────────────────────────────────────── */
+  .app-body { display: flex; flex: 1; overflow: hidden; }
+
+  /* video panel */
+  #video-panel {
+    display: none; flex-direction: column;
+    width: 320px; flex-shrink: 0;
+    background: #000; border-right: 1px solid var(--border);
+    position: relative; overflow: hidden;   /* clip any overflow on resize */
+  }
+  #video-panel.visible { display: flex; }
+
+  /* During a call the video takes over the whole area and the chat is hidden.
+     A toggle (#app.show-chat) brings the chat back as a side panel. */
+  #app.in-call #video-panel { width: auto; flex: 1; border-right: none; }
+  #app.in-call .chat-panel  { display: none; }
+  #app.in-call.show-chat .chat-panel {
+    display: flex; flex: 0 0 320px; border-left: 1px solid var(--border);
+  }
+
+  /* Remote video fills the panel responsively, preserving aspect ratio
+     (letterboxed). min-height/min-width:0 stop the flex item from growing to
+     the stream's intrinsic size and overflowing/cropping on desktop resize. */
+  #remote-video {
+    flex: 1 1 0; min-height: 0; min-width: 0;
+    width: 100%; height: 100%;
+    object-fit: contain; background: #0a0a0a; display: block;
+  }
+  #local-video {
+    position: absolute; bottom: 80px; right: 10px;
+    width: 90px; height: 68px; object-fit: cover;
+    border-radius: 8px; border: 2px solid var(--accent); background: #111; z-index: 2;
+  }
+
+  /* Voice-call view: hide the video, show an avatar + label instead. */
+  .voice-overlay {
+    position: absolute; inset: 0; display: none;
+    flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+    background: radial-gradient(circle at 50% 38%, #1b1b29, #0a0a0a);
+    color: var(--text); text-align: center; padding: 20px;
+  }
+  #app.voice-mode #voice-overlay { display: flex; }
+  #app.voice-mode #remote-video,
+  #app.voice-mode #local-video,
+  #app.voice-mode .video-label { display: none; }
+  .voice-ava {
+    width: 92px; height: 92px; border-radius: 50%;
+    background: var(--accent-dim); border: 2px solid var(--accent);
+    display: flex; align-items: center; justify-content: center; color: var(--accent);
+    animation: pulse 2s ease-in-out infinite;
+  }
+  .voice-title { font-weight: 700; font-size: 1.05rem; }
+  .voice-sub { font-size: .74rem; color: var(--text2); font-family: monospace; word-break: break-all; max-width: 80%; }
+
+  .video-label {
+    position: absolute; top: 10px; left: 10px; z-index: 2;
+    font-size: .7rem; color: rgba(255,255,255,.55);
+    background: rgba(0,0,0,.55); padding: 3px 8px; border-radius: 4px;
+    backdrop-filter: blur(4px);
+  }
+
+  /* floating call bar (shown during active call, inside video panel) */
+  .call-bar {
+    position: absolute; bottom: 0; left: 0; right: 0;
+    display: flex; align-items: center; justify-content: center; gap: 10px;
+    padding: 12px 16px;
+    background: linear-gradient(to top, rgba(0,0,0,.85), transparent);
+    backdrop-filter: blur(2px);
+  }
+  .call-bar-btn {
+    width: 44px; height: 44px; border-radius: 50%; border: none; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: transform .12s, background .15s;
+    flex-shrink: 0;
+  }
+  .call-bar-btn:active { transform: scale(.9); }
+  .call-bar-btn.normal  { background: rgba(255,255,255,.12); color: #fff; }
+  .call-bar-btn.normal:hover { background: rgba(255,255,255,.22); }
+  .call-bar-btn.muted   { background: var(--red); color: #fff; }
+  .call-bar-btn.cam-off { background: var(--red); color: #fff; }
+  .call-bar-btn.sharing { background: var(--accent); color: #fff; }
+  .call-bar-btn.end     { background: var(--red); color: #fff; width: 52px; height: 52px; }
+  .call-bar-btn.end:hover { background: #c53030; }
+
+  /* ─── CHAT ───────────────────────────────────────────────────────────── */
+  .chat-panel { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
+
+  #messages {
+    flex: 1; overflow-y: auto; padding: 16px;
+    display: flex; flex-direction: column; gap: 8px; scroll-behavior: smooth;
+  }
+  #messages::-webkit-scrollbar { width: 3px; }
+  #messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  .msg { display: flex; flex-direction: column; max-width: 74%; }
+  .msg.mine   { align-self: flex-end;   align-items: flex-end; }
+  .msg.theirs { align-self: flex-start; align-items: flex-start; }
+
+  .bubble {
+    padding: 9px 13px; border-radius: 16px;
+    font-size: .875rem; line-height: 1.55; word-break: break-word;
+  }
+  .mine .bubble   { background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
+  .theirs .bubble { background: var(--surface2); color: var(--text); border-bottom-left-radius: 4px; }
+  .msg-time { font-size: .68rem; color: var(--text3); margin-top: 3px; padding: 0 3px; }
+
+  /* file bubble */
+  .file-bubble {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 13px; border-radius: 12px;
+    background: var(--surface2); border: 1px solid var(--border); max-width: 240px;
+  }
+  .mine .file-bubble { border-color: rgba(108,99,255,.3); }
+  .file-icon-wrap {
+    width: 36px; height: 36px; border-radius: 8px; flex-shrink: 0;
+    background: var(--surface3); display: flex; align-items: center; justify-content: center;
+    color: var(--accent);
+  }
+  .file-info { flex: 1; min-width: 0; }
+  .file-name { font-size: .82rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .file-size { font-size: .7rem; color: var(--text2); margin-top: 1px; }
+  .file-dl   { font-size: .78rem; color: var(--accent); text-decoration: none; display: inline-flex; align-items: center; gap: 3px; margin-top: 3px; }
+  .file-dl:hover { text-decoration: underline; }
+
+  .system-msg {
+    align-self: center; font-size: .75rem; color: var(--text3);
+    background: var(--surface2); border: 1px solid var(--border);
+    padding: 4px 12px; border-radius: 20px; margin: 4px 0;
+  }
+
+  /* input bar */
+  .input-bar {
+    padding: 10px 12px; background: var(--surface); border-top: 1px solid var(--border);
+    display: flex; align-items: flex-end; gap: 8px;
+  }
+  #msg-input {
+    flex: 1; resize: none; max-height: 120px;
+    background: var(--surface2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 13px; color: var(--text); font-size: 16px; font-family: inherit;
+    outline: none; line-height: 1.45; transition: border-color .2s; overflow-y: auto;
+  }
+  #msg-input:focus { border-color: var(--accent); }
+  #msg-input::placeholder { color: var(--text3); }
+  #file-input { display: none; }
+
+  .input-action {
+    width: 38px; height: 38px; border-radius: 9px; border: none; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: background .15s;
+    flex-shrink: 0;
+  }
+  .input-action.attach { background: var(--surface2); color: var(--text2); }
+  .input-action.attach:hover { background: var(--surface3); color: var(--text); }
+  .input-action.send   { background: var(--accent); color: #fff; }
+  .input-action.send:hover { filter: brightness(1.1); }
+
+  /* ─── TOAST ──────────────────────────────────────────────────────────── */
+  #toast {
+    position: fixed; bottom: 72px; left: 50%;
+    transform: translateX(-50%) translateY(12px);
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 20px; padding: 9px 18px; font-size: .82rem;
+    opacity: 0; transition: opacity .25s, transform .25s;
+    pointer-events: none; white-space: nowrap; z-index: 99;
+    display: flex; align-items: center; gap: 8px;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  /* ─── INCOMING CALL MODAL ────────────────────────────────────────────── */
+  #call-modal {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,.75); z-index: 50;
+    align-items: center; justify-content: center;
+    backdrop-filter: blur(4px);
+  }
+  #call-modal.visible { display: flex; }
+  .call-modal-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 20px; padding: 32px 28px; text-align: center;
+    display: flex; flex-direction: column; align-items: center; gap: 16px; min-width: 270px;
+  }
+  .call-modal-avatar {
+    width: 64px; height: 64px; border-radius: 50%;
+    background: var(--accent-dim); border: 2px solid var(--accent);
+    display: flex; align-items: center; justify-content: center;
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(108,99,255,.4); }
+    50%       { box-shadow: 0 0 0 12px rgba(108,99,255,0); }
+  }
+  .call-modal-name  { font-weight: 700; font-size: 1.05rem; }
+  .call-modal-label { font-size: .82rem; color: var(--text2); }
+  .call-modal-actions { display: flex; gap: 28px; margin-top: 4px; }
+  .call-fab {
+    width: 56px; height: 56px; border-radius: 50%; border: none; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: transform .12s, filter .15s; flex-direction: column; gap: 4px;
+  }
+  .call-fab:active { transform: scale(.9); }
+  .call-fab.accept { background: var(--green); color: #fff; }
+  .call-fab.accept:hover { filter: brightness(1.1); }
+  .call-fab.decline { background: var(--red); color: #fff; }
+  .call-fab.decline:hover { filter: brightness(1.1); }
+  .call-fab-label { font-size: .68rem; color: var(--text2); font-weight: 500; margin-top: 6px; }
+
+  /* ─── MOBILE ─────────────────────────────────────────────────────────── */
+  @media (max-width: 640px) {
+
+    /* Lobby: tighter padding, no centering gap wasted */
+    #lobby { gap: 14px; padding: 20px 16px; justify-content: flex-start; padding-top: 48px; }
+    .card  { padding: 18px; }
+
+    /* App body: stack vertically instead of side-by-side */
+    .app-body { flex-direction: column; }
+
+    /* Video: full-width overlay on top of chat, fixed height */
+    #video-panel {
+      width: 100%;
+      height: 220px;
+      border-right: none;
+      border-bottom: 1px solid var(--border);
+    }
+
+    /* In a call on mobile: video fills the screen, chat hidden until toggled. */
+    #app.in-call #video-panel { height: auto; flex: 1; border-bottom: none; }
+    #app.in-call.show-chat #video-panel {
+      flex: 0 0 42%; height: auto; border-bottom: 1px solid var(--border);
+    }
+    #app.in-call.show-chat .chat-panel {
+      display: flex; flex: 1 1 auto; border-left: none;
+    }
+
+    #local-video {
+      width: 72px; height: 54px;
+      bottom: 68px; right: 8px;
+    }
+
+    /* Call bar: slightly more compact */
+    .call-bar { padding: 8px 16px; gap: 14px; }
+    .call-bar-btn { width: 40px; height: 40px; }
+    .call-bar-btn.end { width: 48px; height: 48px; }
+
+    /* Chat messages: wider bubbles on small screen */
+    .msg { max-width: 88%; }
+
+    /* Input bar: safe area padding for iPhone home indicator */
+    .input-bar {
+      padding-bottom: calc(10px + env(safe-area-inset-bottom));
+    }
+
+    /* Topbar: shrink peer ID */
+    .peer-sub { max-width: 140px; }
+
+    /* Bigger touch targets for action buttons */
+    .action-btn { width: 42px; height: 42px; }
+
+    /* Incoming call modal: full-width on small screens */
+    .call-modal-card { min-width: unset; width: 90%; max-width: 320px; }
+  }
+
+  /* Extra small (older iPhones, SE) */
+  @media (max-width: 375px) {
+    #video-panel { height: 180px; }
+    .call-modal-actions { gap: 20px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ══ LOBBY ══════════════════════════════════════════════════════════════ -->
+<div id="lobby">
+  <div class="brand">
+    <div class="brand-icon">
+      <!-- chat bubble icon -->
+      <svg class="icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+      </svg>
+    </div>
+    <div class="brand-text">
+      <span>P2PChat</span>
+      <span class="brand-sub">Monkey Marxist</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Your ID</div>
+    <div class="id-row">
+      <span class="id-text" id="my-id">Connecting…</span>
+      <!-- Share button (uses native share sheet on mobile, falls back to copy) -->
+      <button class="btn-icon-sm" onclick="shareId()" title="Share ID">
+        <svg class="icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+          <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+        </svg>
+      </button>
+    </div>
+    <div class="status-row">
+      <span class="dot" id="status-dot"></span>
+      <span id="status-txt">Connecting to PeerJS…</span>
+    </div>
+    <!-- One-click invite: builds a link with your ID; opening it auto-connects. -->
+    <button class="btn btn-primary" id="invite-btn" onclick="shareLink()" disabled>
+      <svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+      </svg>
+      Copy invite link
+    </button>
+    <button class="btn" id="test-media-btn" onclick="testMedia()"
+            style="background:var(--surface2);border:1px solid var(--border);color:var(--text2);padding:10px;width:100%">
+      <svg class="icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+      </svg>
+      Test camera &amp; mic
+    </button>
+    <div id="media-test-result" style="font-size:.75rem;color:var(--text2);line-height:1.45;word-break:break-word"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Connect</div>
+    <input id="peer-input" type="text" placeholder="Enter peer ID…" />
+    <button class="btn btn-primary" id="connect-btn" onclick="connectToPeer()" disabled>
+      <svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>
+      </svg>
+      Connect
+    </button>
+  </div>
+
+  <footer class="lobby-footer">
+    © <span id="footer-year">2026</span> Monkey Marxist
+    <span style="color:var(--text3)">·</span>
+    <a href="https://x.com/monkeymarxist" target="_blank" rel="noopener noreferrer" title="@monkeymarxist on X">
+      <svg class="icon" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
+      </svg>
+      @monkeymarxist
+    </a>
+  </footer>
+</div>
+
+<!-- ══ APP ════════════════════════════════════════════════════════════════ -->
+<div id="app">
+
+  <!-- topbar -->
+  <div class="topbar">
+    <div class="avatar">
+      <svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
+      </svg>
+    </div>
+    <div class="peer-info">
+      <div class="peer-name">Connected</div>
+      <div class="peer-sub" id="connected-peer-id"></div>
+    </div>
+    <div class="topbar-actions">
+      <!-- voice call (idle) -->
+      <button class="action-btn active-accent" id="btn-call-voice" title="Voice call" onclick="startCall('voice')">
+        <svg class="icon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M13.832 16.568a1 1 0 0 0 1.213-.303l.355-.465A2 2 0 0 1 17 15h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2A18 18 0 0 1 2 4a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v3a2 2 0 0 1-.8 1.6l-.468.351a1 1 0 0 0-.292 1.233 14 14 0 0 0 6.392 6.384"/>
+        </svg>
+      </button>
+      <!-- video call (idle) -->
+      <button class="action-btn green" id="btn-call-video" title="Video call" onclick="startCall('video')">
+        <svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5"/>
+          <rect x="2" y="6" width="14" height="12" rx="2"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- body -->
+  <div class="app-body">
+
+    <!-- video panel -->
+    <div id="video-panel">
+      <span class="video-label">Remote</span>
+      <video id="remote-video" autoplay playsinline></video>
+      <video id="local-video"  autoplay playsinline muted></video>
+
+      <!-- shown instead of video during a voice call -->
+      <div id="voice-overlay" class="voice-overlay">
+        <div class="voice-ava">
+          <svg class="icon" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M13.832 16.568a1 1 0 0 0 1.213-.303l.355-.465A2 2 0 0 1 17 15h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2A18 18 0 0 1 2 4a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v3a2 2 0 0 1-.8 1.6l-.468.351a1 1 0 0 0-.292 1.233 14 14 0 0 0 6.392 6.384"/>
+          </svg>
+        </div>
+        <div class="voice-title">Voice call</div>
+        <div class="voice-sub" id="voice-peer"></div>
+      </div>
+
+      <!-- floating call controls -->
+      <div class="call-bar">
+        <!-- mute -->
+        <button class="call-bar-btn normal" id="btn-mute" title="Mute" onclick="toggleMute()">
+          <svg id="ico-mic" class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+            <line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/>
+          </svg>
+        </button>
+
+        <!-- end call — centre, bigger -->
+        <button class="call-bar-btn end" id="btn-hangup" title="End call" onclick="hangUp()">
+          <svg class="icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92v3a2 2 0 0 1-2.18 2A18 18 0 0 1 3 5.18 2 2 0 0 1 5 3h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.91 10.91"/>
+            <line x1="22" y1="2" x2="2" y2="22"/>
+          </svg>
+        </button>
+
+        <!-- camera toggle -->
+        <button class="call-bar-btn normal" id="btn-cam" title="Toggle camera" onclick="toggleCamera()">
+          <svg id="ico-cam" class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="23 7 16 12 23 17 23 7"/>
+            <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+          </svg>
+        </button>
+
+        <!-- screen share -->
+        <button class="call-bar-btn normal" id="btn-screen" title="Share screen" onclick="toggleScreenShare()">
+          <svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+            <line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+          </svg>
+        </button>
+
+        <!-- show / hide chat -->
+        <button class="call-bar-btn normal" id="btn-chat" title="Show/hide chat" onclick="toggleChat()">
+          <svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- chat -->
+    <div class="chat-panel">
+      <div id="messages">
+        <div class="system-msg">🔒 End-to-end encrypted via WebRTC</div>
+      </div>
+
+      <div class="input-bar">
+        <button class="input-action attach" title="Attach file" onclick="document.getElementById('file-input').click()">
+          <svg class="icon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+          </svg>
+        </button>
+        <input type="file" id="file-input" onchange="sendFile(this)" multiple />
+
+        <textarea id="msg-input" rows="1" placeholder="Type a message…"
+          oninput="autoResize(this)" onkeydown="handleKey(event)"></textarea>
+
+        <button class="input-action send" title="Send" onclick="sendMessage()">
+          <svg class="icon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="22" y1="2" x2="11" y2="13"/>
+            <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ INCOMING CALL MODAL ═══════════════════════════════════════════════ -->
+<div id="call-modal">
+  <div class="call-modal-card">
+    <div class="call-modal-avatar">
+      <svg class="icon" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M13.832 16.568a1 1 0 0 0 1.213-.303l.355-.465A2 2 0 0 1 17 15h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2A18 18 0 0 1 2 4a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v3a2 2 0 0 1-.8 1.6l-.468.351a1 1 0 0 0-.292 1.233 14 14 0 0 0 6.392 6.384"/>
+      </svg>
+    </div>
+    <div>
+      <div class="call-modal-name" id="call-modal-title">Incoming call</div>
+      <div class="call-modal-label" id="call-modal-from">from peer</div>
+    </div>
+    <div class="call-modal-actions">
+      <div style="display:flex;flex-direction:column;align-items:center">
+        <button class="call-fab decline" onclick="rejectCall()">
+          <svg class="icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92v3a2 2 0 0 1-2.18 2A18 18 0 0 1 3 5.18 2 2 0 0 1 5 3h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.91 10.91"/>
+            <line x1="22" y1="2" x2="2" y2="22"/>
+          </svg>
+        </button>
+        <span class="call-fab-label">Decline</span>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center">
+        <button class="call-fab accept" onclick="answerCall()">
+          <svg class="icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M13.832 16.568a1 1 0 0 0 1.213-.303l.355-.465A2 2 0 0 1 17 15h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2A18 18 0 0 1 2 4a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v3a2 2 0 0 1-.8 1.6l-.468.351a1 1 0 0 0-.292 1.233 14 14 0 0 0 6.392 6.384"/>
+          </svg>
+        </button>
+        <span class="call-fab-label">Answer</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ INCOMING CHAT REQUEST MODAL ═══════════════════════════════════════════ -->
+<div id="conn-modal" class="call-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:50;align-items:center;justify-content:center;backdrop-filter:blur(4px)">
+  <div class="call-modal-card">
+    <div class="call-modal-avatar" style="animation:none">
+      <svg class="icon" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+      </svg>
+    </div>
+    <div>
+      <div class="call-modal-name">Incoming chat request</div>
+      <div class="call-modal-label" id="conn-modal-from">from peer</div>
+    </div>
+    <div class="call-modal-actions">
+      <div style="display:flex;flex-direction:column;align-items:center">
+        <button class="call-fab decline" onclick="declineConn()" title="Decline">
+          <svg class="icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+        <span class="call-fab-label">Decline</span>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center">
+        <button class="call-fab accept" onclick="acceptConn()" title="Accept">
+          <svg class="icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="20 6 9 17 4 12"/>
+          </svg>
+        </button>
+        <span class="call-fab-label">Accept</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ─── STATE ──────────────────────────────────────────────────────────────────
+let peer, conn, activeCall, localStream;
+let muted = false, cameraOff = false;
+let pendingCall = null;
+let pendingConn = null;                 // incoming chat awaiting accept/decline
+let pendingMode = 'video';              // mode of the incoming call ('video'|'voice')
+let voiceMode = false;                  // true while in an audio-only call
+let screenStream = null, sharing = false;
+const fileChunks = {};
+
+// ─── SECURITY LIMITS ─────────────────────────────────────────────────────────
+// Caps to stop a connected peer from exhausting memory (DoS) by streaming huge
+// or never-ending file data, or opening many transfers at once.
+const MAX_MSG_CHARS      = 16 * 1024;        // drop absurdly long chat messages
+const MAX_NAME_CHARS     = 256;              // file-name length cap
+const MAX_FILE_BYTES     = 250 * 1024 * 1024;// 250 MB per file
+const MAX_TOTAL_BUFFERED = 400 * 1024 * 1024;// 400 MB across all in-flight files
+const MAX_CONCURRENT     = 8;                // simultaneous incoming transfers
+const MAX_FILE_ID_BYTES  = 64;               // sanity bound on chunk id header
+let   totalBuffered      = 0;                // bytes currently held in fileChunks
+const objectUrls         = new Set();        // track blob: URLs so we can revoke
+
+// ─── ICONS (SVG strings for dynamic swap) ────────────────────────────────────
+// Minimalist Lucide (https://lucide.dev) icons, inlined for offline + CSP safety.
+const _SVG = p => `<svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
+const ICO = {
+  mic:    _SVG(`<path d="M12 19v3"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><rect x="9" y="2" width="6" height="13" rx="3"/>`),
+  micOff: _SVG(`<line x1="2" y1="2" x2="22" y2="22"/><path d="M18.89 13.23A7.12 7.12 0 0 0 19 12v-2"/><path d="M5 10v2a7 7 0 0 0 12 5"/><path d="M15 9.34V5a3 3 0 0 0-5.68-1.33"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12"/><line x1="12" y1="19" x2="12" y2="22"/>`),
+  cam:    _SVG(`<path d="m16 13 5.22 3.48a.5.5 0 0 0 .78-.42V7.94a.5.5 0 0 0-.78-.42L16 11"/><rect x="2" y="6" width="14" height="12" rx="2"/>`),
+  camOff: _SVG(`<path d="M10.66 6H14a2 2 0 0 1 2 2v2.34l1 1L22 8v8"/><path d="M16 16a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h2l10 10Z"/><line x1="2" y1="2" x2="22" y2="22"/>`),
+  file:     _SVG(`<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/>`),
+  screen:   _SVG(`<path d="M12 14v-4"/><path d="m9 12 3-3 3 3"/><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/>`),
+  screenOff:_SVG(`<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/><line x1="2" y1="2" x2="22" y2="22"/>`),
+  download: _SVG(`<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>`),
+};
+
+// ─── PEER INIT ───────────────────────────────────────────────────────────────
+const ICE_CONFIG = {
+  iceServers: [
+    // STUN — multiple providers for redundancy
+    { urls: 'stun:stun.l.google.com:19302'  },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun.cloudflare.com:3478' },
+    // TURN on port 80 UDP (most permissive)
+    { urls: 'turn:openrelay.metered.ca:80',   username: 'openrelayproject', credential: 'openrelayproject' },
+    // TURN on port 443 TCP — punches through UAE/corporate firewalls (looks like HTTPS)
+    { urls: 'turn:openrelay.metered.ca:443',              username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+    // Second TURN provider as backup
+    { urls: 'turn:relay.metered.ca:80',   username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:relay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+  ],
+  iceTransportPolicy: 'all', // try direct first, fall back to TURN
+};
+
+function initPeer() {
+  // Try to reuse the same ID from last session (survives tab switch / suspension)
+  const savedId = sessionStorage.getItem('myPeerId');
+
+  peer = new Peer(savedId || undefined, { debug: 0, config: ICE_CONFIG });
+
+  peer.on('open', id => {
+    sessionStorage.setItem('myPeerId', id);   // save for reconnect
+    document.getElementById('my-id').textContent = id;
+    document.getElementById('status-dot').classList.remove('error');
+    document.getElementById('status-dot').classList.add('online');
+    document.getElementById('status-txt').textContent = 'Ready to connect';
+    document.getElementById('connect-btn').disabled = false;
+    document.getElementById('invite-btn').disabled  = false;
+    maybeAutoConnect();   // if opened via an invite link, connect automatically
+  });
+
+  peer.on('error', err => {
+    // If saved ID is taken/expired, retry with a fresh one
+    if (err.type === 'unavailable-id') {
+      sessionStorage.removeItem('myPeerId');
+      peer.destroy();
+      initPeer();
+      return;
+    }
+    document.getElementById('status-dot').classList.add('error');
+    document.getElementById('status-txt').textContent = err.type || 'Error';
+    showToast('⚠️ ' + err.message);
+  });
+
+  peer.on('connection', c => {
+    // Busy, or another request already pending → reject.
+    if ((conn && conn.open) || pendingConn) { c.close(); return; }
+    // Don't auto-accept: ask the user before joining a chat with a stranger.
+    pendingConn = c;
+    document.getElementById('conn-modal-from').textContent = c.peer;
+    document.getElementById('conn-modal').style.display = 'flex';
+  });
+
+  peer.on('call', call => {
+    // Reject a second incoming call if we're already busy.
+    if (activeCall || pendingCall) { call.close(); return; }
+    pendingCall = call;
+    pendingMode = (call.metadata && call.metadata.mode === 'voice') ? 'voice' : 'video';
+    document.getElementById('call-modal-title').textContent =
+      'Incoming ' + (pendingMode === 'voice' ? 'voice' : 'video') + ' call';
+    document.getElementById('call-modal-from').textContent = call.peer;
+    document.getElementById('call-modal').classList.add('visible');
+    startRingtone();
+  });
+
+  peer.on('disconnected', () => {
+    // PeerJS server connection dropped — reconnect silently
+    document.getElementById('status-dot').classList.remove('online');
+    document.getElementById('status-txt').textContent = 'Reconnecting…';
+    setTimeout(() => { if (peer && !peer.destroyed) peer.reconnect(); }, 1500);
+  });
+}
+
+// Reconnect when user returns to the tab (after switching to WhatsApp etc.)
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && peer) {
+    if (peer.destroyed) {
+      initPeer();
+    } else if (peer.disconnected) {
+      peer.reconnect();
+    }
+  }
+});
+
+// ─── LOBBY ───────────────────────────────────────────────────────────────────
+function connectToPeer() {
+  const id = document.getElementById('peer-input').value.trim();
+  if (!id) return;
+  if (!peer || !peer.id) { showToast('Still connecting to the signalling server…'); return; }
+  if (id === peer.id) { showToast("That's your own ID — share it with someone else"); return; }
+  if (conn && conn.open) { showToast('Already connected'); return; }
+  document.getElementById('status-txt').textContent = 'Connecting…';
+  // serialization:'raw' lets us send ArrayBuffers directly for file chunks
+  conn = peer.connect(id, { reliable: true, serialization: 'raw' });
+  setupDataChannel();
+}
+
+// Accept / decline an incoming chat request (consent before connecting).
+function acceptConn() {
+  document.getElementById('conn-modal').style.display = 'none';
+  if (!pendingConn) return;
+  conn = pendingConn;
+  pendingConn = null;
+  setupDataChannel();
+}
+
+function declineConn() {
+  document.getElementById('conn-modal').style.display = 'none';
+  if (pendingConn) { pendingConn.close(); pendingConn = null; }
+}
+
+function setupDataChannel() {
+  // Timeout: if not open within 15 s, surface an error
+  const timeout = setTimeout(() => {
+    if (!conn || conn.open) return;
+    showToast('⚠️ Connection timed out — check the peer ID and retry');
+    document.getElementById('status-txt').textContent = 'Connection failed';
+  }, 15000);
+
+  const onOpen = () => {
+    clearTimeout(timeout);
+    // Force ArrayBuffer delivery for binary. The RTCDataChannel binaryType
+    // default differs across browsers ('blob' on some Firefox/Safari builds),
+    // which would otherwise break file-chunk parsing. This guarantees we get
+    // ArrayBuffers everywhere (Chrome/Firefox/Safari, desktop + mobile).
+    const channel = rawChannel();
+    if (channel) channel.binaryType = 'arraybuffer';
+    document.getElementById('connected-peer-id').textContent = conn.peer;
+    showApp();
+    appendSystem('Connected ✓');
+  };
+  // An accepted incoming connection may already be open by the time we attach
+  // handlers — in that case fire onOpen directly so we don't miss the event.
+  if (conn.open) onOpen(); else conn.on('open', onOpen);
+
+  conn.on('data', raw => {
+    // Binary (file chunk) can arrive as ArrayBuffer, a typed-array view, or a
+    // Blob depending on the browser. Normalise all three before parsing.
+    if (raw instanceof ArrayBuffer)      { handleBinary(raw); return; }
+    if (ArrayBuffer.isView(raw))         { handleBinary(raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength)); return; }
+    if (typeof Blob !== 'undefined' && raw instanceof Blob) { raw.arrayBuffer().then(handleBinary); return; }
+    // Otherwise it's a control message (JSON string).
+    if (typeof raw !== 'string' || raw.length > MAX_MSG_CHARS + 1024) return;
+    let data;
+    try { data = JSON.parse(raw); } catch { return; }
+    if (!data || typeof data !== 'object') return;   // ignore non-object payloads
+    if      (data.type === 'msg')       receiveMessage(data);
+    else if (data.type === 'file-meta') receiveFileMeta(data);
+    else if (data.type === 'file-done') receiveFileDone(data);
+  });
+
+  conn.on('close', () => {
+    appendSystem('Peer disconnected');
+    conn = null;          // allow a fresh incoming/outgoing connection
+    // Drop any half-received file buffers so they can't linger in memory.
+    for (const k in fileChunks) delete fileChunks[k];
+    totalBuffered = 0;
+    hangUp();             // tear down any in-progress call + release camera/mic
+  });
+  conn.on('error', err => {
+    clearTimeout(timeout);
+    showToast('Connection error: ' + (err.message || err.type));
+  });
+}
+
+// Reconstruct a tagged file chunk: [4-byte idLen][id bytes][payload].
+// Defensive against a malformed/hostile buffer (bad length prefix etc.).
+function handleBinary(buf) {
+  try {
+    if (!(buf instanceof ArrayBuffer) || buf.byteLength < 4) return;
+    const idLen = new DataView(buf).getUint32(0);
+    if (idLen <= 0 || idLen > MAX_FILE_ID_BYTES || 4 + idLen > buf.byteLength) return;
+    const id    = new TextDecoder().decode(new Uint8Array(buf, 4, idLen));
+    const chunk = buf.slice(4 + idLen);
+    receiveFileChunk({ id, data: chunk });
+  } catch { /* ignore malformed chunk */ }
+}
+
+// Underlying RTCDataChannel (property name varies across PeerJS versions).
+const rawChannel = () => conn && (conn.dataChannel || conn._dc);
+
+function showApp() {
+  document.getElementById('lobby').style.display = 'none';
+  document.getElementById('app').style.display   = 'flex';
+}
+
+// ─── INVITE LINK (one-click connect) ─────────────────────────────────────────
+// Build a link that embeds your Peer ID in the URL *hash*. The hash is never
+// sent to any server (better for privacy than a query string), and opening the
+// link auto-connects the visitor to you.
+function inviteLink(id) {
+  return location.origin + location.pathname + '#peer=' + encodeURIComponent(id);
+}
+
+async function shareLink() {
+  const id = peer && peer.id;
+  if (!id) { showToast('Still connecting — try again in a moment'); return; }
+  const url = inviteLink(id);
+  // Single text block with the link + instructions. We deliberately do NOT pass
+  // a separate `url` field to navigator.share — many apps append it to the text,
+  // which made the link appear twice.
+  const message =
+    'Join me on P2PChat — a private, end-to-end-encrypted 1-to-1 chat.\n\n' +
+    'How to connect:\n' +
+    '1. Open this link in a browser (phone or computer):\n' + url + '\n' +
+    '2. It connects to me automatically — no ID to type in.\n' +
+    '3. I tap "Accept" on my side and we\'re chatting.\n\n' +
+    'For a video/voice call, tap the green call button after connecting.';
+  // Native share sheet on mobile (WhatsApp, Messages, …); clipboard elsewhere.
+  if (navigator.share) {
+    try { await navigator.share({ title: 'P2PChat invite', text: message }); return; }
+    catch (e) { if (e && e.name === 'AbortError') return; }   // cancelled; else fall back
+  }
+  try { await navigator.clipboard.writeText(message); showToast('Invite copied — paste it to your friend'); }
+  catch { showToast('Could not copy automatically. Link: ' + url); }
+}
+
+// Read a target Peer ID from an invite link (#peer=ID). One-shot per page load.
+let autoConnectId = (() => {
+  try {
+    const h = (location.hash || '').replace(/^#/, '');
+    return h ? (new URLSearchParams(h).get('peer') || '').trim() : '';
+  } catch { return ''; }
+})();
+
+function maybeAutoConnect() {
+  if (!autoConnectId) return;
+  const target = autoConnectId;
+  autoConnectId = '';                       // ensure we only auto-connect once
+  if (!peer || !peer.id || target === peer.id || (conn && conn.open)) return;
+  document.getElementById('peer-input').value = target;
+  document.getElementById('status-txt').textContent = 'Connecting via invite link…';
+  connectToPeer();
+}
+
+function shareId() {
+  const id = document.getElementById('my-id').textContent;
+  // Use native share sheet on mobile (opens WhatsApp, Messages, etc. directly)
+  if (navigator.share) {
+    navigator.share({
+      title: 'P2P Chat — connect with me',
+      text: 'Open this link and enter my Peer ID to chat:\n\nID: ' + id + '\n\n' + location.href,
+    }).catch(() => {}); // user cancelled — no error needed
+  } else {
+    // Desktop fallback: copy to clipboard
+    navigator.clipboard.writeText(id)
+      .then(() => showToast('ID copied to clipboard'));
+  }
+}
+
+// ─── CHAT ────────────────────────────────────────────────────────────────────
+function sendMessage() {
+  const inp  = document.getElementById('msg-input');
+  const text = inp.value.trim();
+  if (!text || !conn?.open) return;
+  const msg = { type: 'msg', text, ts: Date.now() };
+  conn.send(JSON.stringify(msg)); // send as string — matches serialization:'raw'
+  appendMessage(text, true, msg.ts);
+  inp.value = '';
+  inp.style.height = '';
+}
+
+function receiveMessage({ text, ts }) {
+  if (typeof text !== 'string' || !text) return;          // ignore non-text
+  if (text.length > MAX_MSG_CHARS) text = text.slice(0, MAX_MSG_CHARS) + '…';
+  const t = Number(ts);
+  appendMessage(text, false, Number.isFinite(t) ? t : Date.now());
+}
+
+function appendMessage(text, mine, ts) {
+  const wrap   = el('div', 'msg ' + (mine ? 'mine' : 'theirs'));
+  const bubble = el('div', 'bubble');
+  bubble.textContent = text;
+  const time = el('div', 'msg-time');
+  time.textContent = fmt(ts);
+  wrap.append(bubble, time);
+  msgs().appendChild(wrap);
+  scrollBottom();
+}
+
+function appendSystem(txt) {
+  const d = el('div', 'system-msg');
+  d.textContent = txt;
+  msgs().appendChild(d);
+  scrollBottom();
+}
+
+function handleKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+}
+
+function autoResize(textarea) {
+  textarea.style.height = 'auto';
+  textarea.style.height = Math.min(textarea.scrollHeight, 120) + 'px';
+}
+
+// ─── FILE SHARING ────────────────────────────────────────────────────────────
+// Keep each sent message well under the ~16 KB limit that is safe across all
+// WebRTC implementations (Chrome↔Firefox in particular fail above this). The
+// payload plus the id header must stay under 16384 bytes.
+const CHUNK = 16 * 1024 - 512;
+// Pause sending when the channel's send buffer climbs above this, to avoid
+// overflowing it (which silently closes the channel on large files).
+const BUFFER_HIGH = 1024 * 1024; // 1 MB
+
+function sendFile(input) {
+  Array.from(input.files).forEach(sendOneFile);
+  input.value = '';
+}
+
+// Resolves once the data channel has drained below the high-water mark.
+function waitForDrain() {
+  const channel = rawChannel();
+  if (!channel || channel.bufferedAmount < BUFFER_HIGH) return Promise.resolve();
+  return new Promise(resolve => {
+    const check = () => {
+      if (!conn?.open || rawChannel()?.bufferedAmount < BUFFER_HIGH) resolve();
+      else setTimeout(check, 50);
+    };
+    check();
+  });
+}
+
+async function sendOneFile(file) {
+  if (!conn?.open) return;
+  const id      = rand();
+  const idBytes = new TextEncoder().encode(id);
+  // Send metadata as JSON string
+  conn.send(JSON.stringify({ type: 'file-meta', id, name: file.name, size: file.size, mime: file.type }));
+  const info = appendFileBubble(file.name, file.size, null, true); // shows "Sending…"
+  let offset = 0;
+  try {
+    while (offset < file.size) {
+      // slice.arrayBuffer() is reliable on all modern browsers and avoids the
+      // event-juggling of FileReader.
+      const payload = await file.slice(offset, offset + CHUNK).arrayBuffer();
+      // Tag each chunk: [4-byte idLen][id bytes][payload]
+      const tagged = new ArrayBuffer(4 + idBytes.byteLength + payload.byteLength);
+      const view   = new DataView(tagged);
+      view.setUint32(0, idBytes.byteLength);
+      new Uint8Array(tagged, 4, idBytes.byteLength).set(idBytes);
+      new Uint8Array(tagged, 4 + idBytes.byteLength).set(new Uint8Array(payload));
+      await waitForDrain();
+      if (!conn?.open) { showToast('Transfer cancelled — peer disconnected'); return; }
+      conn.send(tagged);
+      offset += payload.byteLength;
+    }
+    conn.send(JSON.stringify({ type: 'file-done', id }));
+    // Give the sender a working download link to their own file too.
+    setFileInfo(info, file.name, file.size, makeObjectUrl(file));
+  } catch (e) {
+    showToast('Failed to send ' + file.name);
+  }
+}
+
+function receiveFileMeta({ id, name, size, mime }) {
+  if (typeof id !== 'string' || !id || fileChunks[id]) return;     // bad/duplicate id
+  if (Object.keys(fileChunks).length >= MAX_CONCURRENT) {
+    appendSystem('⚠️ Too many incoming files at once — one was rejected.');
+    return;
+  }
+  const sz = Number(size);
+  const safeSize = Number.isFinite(sz) && sz >= 0 ? sz : 0;
+  if (safeSize > MAX_FILE_BYTES) {
+    appendSystem('⚠️ Rejected an oversized incoming file (' + fmtSize(safeSize) + ').');
+    return;
+  }
+  fileChunks[id] = {
+    name:  (typeof name === 'string' ? name : 'file').slice(0, MAX_NAME_CHARS),
+    size:  safeSize,
+    mime:  typeof mime === 'string' ? mime : '',
+    chunks: [], received: 0,
+  };
+}
+
+function receiveFileChunk({ id, data }) {
+  const info = fileChunks[id];
+  if (!info || !(data instanceof ArrayBuffer)) return;
+  info.received += data.byteLength;
+  totalBuffered += data.byteLength;
+  const perFileLimit = info.size > 0 ? info.size + CHUNK : MAX_FILE_BYTES;
+  // Abort if this file or the global buffer blows past the caps (DoS guard).
+  if (info.received > perFileLimit || info.received > MAX_FILE_BYTES || totalBuffered > MAX_TOTAL_BUFFERED) {
+    appendSystem('⚠️ Aborted an incoming file that exceeded the size limit.');
+    abortIncoming(id);
+    return;
+  }
+  info.chunks.push(data);
+}
+
+function abortIncoming(id) {
+  const info = fileChunks[id];
+  if (!info) return;
+  totalBuffered -= info.received;
+  delete fileChunks[id];
+}
+
+function receiveFileDone({ id }) {
+  const info = (typeof id === 'string') ? fileChunks[id] : null;
+  if (!info) return;
+  const url = makeObjectUrl(new Blob(info.chunks, { type: info.mime }));
+  appendFileBubble(info.name, info.size, url, false);
+  totalBuffered -= info.received;
+  delete fileChunks[id];
+}
+
+// Track blob: URLs so they can be revoked (avoids leaking memory over a session).
+function makeObjectUrl(blob) { const u = URL.createObjectURL(blob); objectUrls.add(u); return u; }
+window.addEventListener('pagehide', () => { objectUrls.forEach(u => URL.revokeObjectURL(u)); objectUrls.clear(); });
+
+function appendFileBubble(name, size, url, mine) {
+  const wrap   = el('div', 'msg ' + (mine ? 'mine' : 'theirs'));
+  const bubble = el('div', 'file-bubble');
+  const iconWrap = el('div', 'file-icon-wrap');
+  iconWrap.innerHTML = ICO.file;
+  const info = el('div', 'file-info');
+  setFileInfo(info, name, size, url);
+  bubble.append(iconWrap, info);
+  wrap.appendChild(bubble);
+  msgs().appendChild(wrap);
+  scrollBottom();
+  return info; // caller can update it later (e.g. swap "Sending…" for a link)
+}
+
+function setFileInfo(info, name, size, url) {
+  info.innerHTML = `
+    <div class="file-name">${esc(name)}</div>
+    <div class="file-size">${fmtSize(size)}</div>
+    ${url ? `<a class="file-dl" href="${url}" download="${esc(name)}">${ICO.download} Download</a>` : '<div class="file-size">Sending…</div>'}`;
+}
+
+// ─── CALL ────────────────────────────────────────────────────────────────────
+
+// Why Safari (and Chrome) may NEVER prompt for the camera:
+// getUserMedia only works in a "secure context" — https:// or http://localhost.
+// Opened as a file:// page, or served over plain http:// from a LAN IP,
+// navigator.mediaDevices is undefined and the request fails before any
+// permission prompt can appear. This check turns that silent failure into a
+// clear, actionable message.
+function mediaSupported() {
+  return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+}
+
+let cameraStatus = '';
+
+// Explicit, persistent diagnostic for a getUserMedia failure (kept in the chat
+// log, not a transient toast, so it can actually be read and acted on).
+function explainMediaError(e) {
+  const n = e && e.name;
+  if (n === 'NotAllowedError' || n === 'SecurityError')
+    return 'Permission denied (' + n + '). Safari: click the "aA" in the address bar - Website Settings - set Camera & Microphone to Allow, then reload. Also check macOS System Settings - Privacy & Security - Camera and Microphone.';
+  if (n === 'NotReadableError' || n === 'AbortError')
+    return 'Camera/mic is busy (' + n + ') - another app or browser tab is using it. Close anything else using the camera. If you are testing BOTH ends on one computer, use a second device (or a different browser) for the other side, since the camera can only be opened once.';
+  if (n === 'NotFoundError' || n === 'OverconstrainedError')
+    return 'No camera/mic found (' + n + ').';
+  return 'Media error: ' + (e && (e.message || e.name) || 'unknown');
+}
+
+// Acquire media for a call. mode 'voice' = microphone only; mode 'video' =
+// camera + mic, falling back to mic-only with a "Camera off" placeholder video
+// track (so a video sender exists for screen-sharing even without a camera).
+async function getMedia(mode) {
+  cameraStatus = '';
+  const wantVideo = mode !== 'voice';
+  if (!mediaSupported()) {
+    cameraStatus = window.isSecureContext ? 'media API unavailable' : 'blocked (needs https/localhost)';
+    appendSystem('⚠️ ' + (window.isSecureContext
+      ? 'This browser does not expose camera/mic access.'
+      : 'Camera/mic blocked - open this page over https:// or localhost, not file://. Safari never prompts otherwise.'));
+    return wantVideo ? ensureVideoTrack(new MediaStream()) : new MediaStream();
+  }
+  try {
+    const s = await navigator.mediaDevices.getUserMedia({ video: wantVideo, audio: true });
+    cameraStatus = wantVideo ? 'camera + mic' : 'mic only';
+    return s;
+  } catch (e) {
+    appendSystem('⚠️ ' + explainMediaError(e));
+    cameraStatus = (e.name || 'error');
+    if (!wantVideo) return new MediaStream();   // voice call: nothing more to try
+    // Video call: fall back to mic-only and add a placeholder video lane.
+    try {
+      const a = await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
+      appendSystem('Continuing with microphone only (no camera).');
+      return ensureVideoTrack(a);
+    } catch (e2) {
+      appendSystem('Microphone also unavailable (' + (e2.name || e2.message) + '). Continuing with no camera or mic.');
+      return ensureVideoTrack(new MediaStream());
+    }
+  }
+}
+
+function ensureVideoTrack(stream) {
+  if (stream.getVideoTracks().length === 0) stream.addTrack(makeBlankVideoTrack());
+  return stream;
+}
+
+// A live "Camera off" placeholder video track (canvas -> captureStream). Kept
+// ticking so frames keep flowing; the timer is cleared on hangUp.
+let blankTimer = null;
+function makeBlankVideoTrack() {
+  const canvas = Object.assign(document.createElement('canvas'), { width: 640, height: 480 });
+  const ctx = canvas.getContext('2d');
+  const draw = () => {
+    ctx.fillStyle = '#0d0d12'; ctx.fillRect(0, 0, 640, 480);
+    ctx.fillStyle = '#7070a0'; ctx.font = '22px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('Camera off', 320, 240);
+  };
+  draw();
+  const stream = canvas.captureStream(8);
+  clearInterval(blankTimer);
+  blankTimer = setInterval(draw, 250); // keep the track producing frames
+  return stream.getVideoTracks()[0];
+}
+
+// Lobby diagnostic: force a permission prompt and report the exact result.
+async function testMedia() {
+  const out = document.getElementById('media-test-result');
+  if (out) { out.textContent = 'Requesting camera & mic…'; out.style.color = 'var(--text2)'; }
+  if (!mediaSupported()) {
+    const msg = window.isSecureContext ? 'Media API unavailable in this browser.'
+      : 'Blocked: not a secure context. Use https:// or localhost (not file://).';
+    if (out) { out.textContent = '✗ ' + msg; out.style.color = 'var(--red)'; }
+    return;
+  }
+  try {
+    const s = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    s.getTracks().forEach(t => t.stop());
+    if (out) { out.textContent = '✓ Camera & mic OK — permission granted.'; out.style.color = 'var(--green)'; }
+  } catch (e) {
+    if (out) { out.textContent = '✗ ' + explainMediaError(e); out.style.color = 'var(--red)'; }
+  }
+}
+
+// mode: 'video' (camera + mic) or 'voice' (mic only). The mode is sent to the
+// peer so their incoming-call prompt and answer match.
+async function startCall(mode) {
+  if (!conn?.open) { showToast('Not connected to a peer'); return; }
+  if (activeCall) { showToast('Already in a call'); return; }
+  voiceMode = (mode === 'voice');
+  localStream = await getMedia(mode);
+  playInVideo('local-video', localStream);
+  activeCall = peer.call(conn.peer, localStream, { metadata: { mode: voiceMode ? 'voice' : 'video' } });
+  setupCallHandlers(activeCall);
+  showCallUI(true);
+  appendSystem((voiceMode ? 'Voice' : 'Video') + ' call started — ' + cameraStatus);
+}
+
+async function answerCall() {
+  stopRingtone();
+  document.getElementById('call-modal').classList.remove('visible');
+  if (!pendingCall) return; // caller hung up before we answered
+  voiceMode = (pendingMode === 'voice');   // match the caller's chosen mode
+  localStream = await getMedia(pendingMode);
+  playInVideo('local-video', localStream);
+  pendingCall.answer(localStream);
+  activeCall = pendingCall;
+  setupCallHandlers(activeCall);
+  showCallUI(true);
+  appendSystem((voiceMode ? 'Voice' : 'Video') + ' call answered — ' + cameraStatus);
+  pendingCall = null;
+}
+
+function rejectCall() {
+  stopRingtone();
+  document.getElementById('call-modal').classList.remove('visible');
+  if (pendingCall) { pendingCall.close(); pendingCall = null; }
+  appendSystem('Call declined');
+}
+
+function setupCallHandlers(call) {
+  call.on('stream', s => { playInVideo('remote-video', s); });
+  // Remote ended the call: run full teardown so our camera/mic are released too.
+  call.on('close',  () => { if (activeCall === call) hangUp(); });
+  call.on('error',  err => { showToast('Call error: ' + (err.message || err.type)); hangUp(); });
+}
+
+function hangUp() {
+  const wasActive = !!activeCall || !!localStream;
+  if (activeCall) { activeCall.close(); activeCall = null; }
+  if (screenStream) { screenStream.getTracks().forEach(t => t.stop()); screenStream = null; }
+  if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
+  clearInterval(blankTimer); blankTimer = null;
+  sharing = false;
+  document.getElementById('local-video').srcObject  = null;
+  document.getElementById('remote-video').srcObject = null;
+  showCallUI(false);
+  if (wasActive) appendSystem('Call ended');
+}
+
+// Attach a stream and explicitly call play() — autoplay is unreliable on iOS
+// Safari and some mobile browsers even with the autoplay attribute.
+function playInVideo(id, stream) {
+  const v = document.getElementById(id);
+  v.srcObject = stream;
+  const p = v.play();
+  if (p && p.catch) p.catch(() => {});
+}
+
+function showCallUI(active) {
+  const app = document.getElementById('app');
+  app.classList.toggle('in-call', active);
+  app.classList.toggle('voice-mode', active && voiceMode);
+  document.getElementById('video-panel').classList.toggle('visible', active);
+  // Idle call buttons show only when not in a call.
+  const idleDisplay = active ? 'none' : 'flex';
+  document.getElementById('btn-call-video').style.display = idleDisplay;
+  document.getElementById('btn-call-voice').style.display = idleDisplay;
+  // Camera & screen-share are video-call features → hidden during a voice call.
+  document.getElementById('btn-cam').style.display    = voiceMode ? 'none' : '';
+  document.getElementById('btn-screen').style.display = voiceMode ? 'none' : '';
+  if (active && voiceMode) document.getElementById('voice-peer').textContent = conn ? conn.peer : '';
+  if (!active) {
+    app.classList.remove('show-chat');   // restore full chat when call ends
+    voiceMode = false; muted = false; cameraOff = false; sharing = false;
+  }
+  syncMuteUI(); syncCamUI(); syncShareUI(); syncChatUI();
+}
+
+// Toggle the chat panel during a call (video stays the main view).
+function toggleChat() {
+  document.getElementById('app').classList.toggle('show-chat');
+  syncChatUI();
+}
+
+function syncChatUI() {
+  const on = document.getElementById('app').classList.contains('show-chat');
+  const btn = document.getElementById('btn-chat');
+  if (btn) btn.className = 'call-bar-btn ' + (on ? 'sharing' : 'normal');
+}
+
+// ─── SCREEN SHARING ──────────────────────────────────────────────────────────
+async function toggleScreenShare() {
+  if (!activeCall) { showToast('Start a call first'); return; }
+  if (sharing) { stopScreenShare(); return; }
+
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+    showToast(window.isSecureContext
+      ? 'Screen sharing isn’t supported in this browser.'
+      : '⚠️ Screen sharing needs https:// or localhost (not a file:// URL).');
+    return;
+  }
+
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+  } catch (e) {
+    if (e.name !== 'NotAllowedError' && e.name !== 'AbortError') {
+      showToast('Screen share failed: ' + (e.message || e.name));
+    }
+    return; // user cancelled the picker — nothing to do
+  }
+
+  const screenTrack = stream.getVideoTracks()[0];
+  if (!screenTrack) { showToast('No screen track available'); return; }
+
+  if (!replaceOutgoingVideo(screenTrack)) {
+    // Audio-only call had no video channel to swap into.
+    stream.getTracks().forEach(t => t.stop());
+    showToast('Turn your camera on before sharing your screen.');
+    return;
+  }
+
+  screenStream = stream;
+  sharing = true;
+  playInVideo('local-video', screenStream);    // preview what you're sharing
+  syncShareUI();
+  appendSystem('You started sharing your screen');
+
+  // The browser’s own “Stop sharing” bar ends the track — restore camera then.
+  screenTrack.onended = () => { if (sharing) stopScreenShare(); };
+}
+
+function stopScreenShare() {
+  if (screenStream) { screenStream.getTracks().forEach(t => t.stop()); screenStream = null; }
+  // Restore the camera track (if the call has one) so the peer sees you again.
+  const camTrack = localStream && localStream.getVideoTracks()[0];
+  replaceOutgoingVideo(camTrack || null);
+  playInVideo('local-video', localStream || new MediaStream());
+  sharing = false;
+  syncShareUI();
+  appendSystem('You stopped sharing your screen');
+}
+
+// Swap the outgoing video track without renegotiation (replaceTrack reuses the
+// existing m-line). Returns false if the call has no video sender to swap into.
+function replaceOutgoingVideo(track) {
+  const pc = activeCall && activeCall.peerConnection;
+  if (!pc) return false;
+  const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video')
+              || pc.getSenders().find(s => !s.track); // sender created but track-less
+  if (!sender) return false;
+  Promise.resolve(sender.replaceTrack(track)).catch(err =>
+    appendSystem('Could not switch video track: ' + (err.message || err.name)));
+  return true;
+}
+
+function syncShareUI() {
+  const btn = document.getElementById('btn-screen');
+  if (!btn) return;
+  btn.innerHTML = sharing ? ICO.screenOff : ICO.screen;
+  btn.className = 'call-bar-btn ' + (sharing ? 'sharing' : 'normal');
+  btn.title = sharing ? 'Stop sharing' : 'Share screen';
+}
+
+function toggleMute() {
+  if (!localStream) return;
+  muted = !muted;
+  localStream.getAudioTracks().forEach(t => t.enabled = !muted);
+  syncMuteUI();
+}
+
+function syncMuteUI() {
+  const btn = document.getElementById('btn-mute');
+  btn.innerHTML = muted ? ICO.micOff : ICO.mic;
+  btn.className = 'call-bar-btn ' + (muted ? 'muted' : 'normal');
+  btn.title = muted ? 'Unmute' : 'Mute';
+}
+
+function toggleCamera() {
+  if (!localStream) return;
+  cameraOff = !cameraOff;
+  localStream.getVideoTracks().forEach(t => t.enabled = !cameraOff);
+  syncCamUI();
+}
+
+function syncCamUI() {
+  const btn = document.getElementById('btn-cam');
+  btn.innerHTML = cameraOff ? ICO.camOff : ICO.cam;
+  btn.className = 'call-bar-btn ' + (cameraOff ? 'cam-off' : 'normal');
+  btn.title = cameraOff ? 'Turn on camera' : 'Turn off camera';
+}
+
+// ─── TOAST ───────────────────────────────────────────────────────────────────
+let toastTimer;
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
+}
+
+// ─── HELPERS ─────────────────────────────────────────────────────────────────
+const msgs      = () => document.getElementById('messages');
+const scrollBottom = () => { const m = msgs(); m.scrollTop = m.scrollHeight; };
+const el        = (tag, cls) => { const e = document.createElement(tag); e.className = cls; return e; };
+const rand      = () => Math.random().toString(36).slice(2);
+const fmt       = ts => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+const fmtSize   = b => { b = Number(b); if (!Number.isFinite(b) || b < 0) b = 0;
+                         return b < 1024 ? b + ' B' : b < 1048576 ? (b/1024).toFixed(1) + ' KB' : (b/1048576).toFixed(1) + ' MB'; };
+const esc       = s => String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+
+// ─── RINGTONE (Web Audio API — no external files) ────────────────────────────
+let ringCtx = null, ringInterval = null;
+
+function startRingtone() {
+  stopRingtone(); // clear any previous
+  // Browsers require a user gesture before AudioContext can run.
+  // The incoming-call modal is shown after user interaction (the call button),
+  // so this is safe. We create a fresh context each time.
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return; // no Web Audio support — skip ringtone, modal still shows
+  ringCtx = new Ctx();
+  // Mobile browsers often start the context suspended; resume best-effort.
+  if (ringCtx.state === 'suspended') ringCtx.resume().catch(() => {});
+
+  // Classic double-ring pattern: ring ring … pause … ring ring …
+  // Each "ring" = 440 Hz + 480 Hz mixed for ~0.4 s, gap 0.2 s, pause 2 s
+  let step = 0;
+  const pattern = [
+    { dur: 0.4, on: true  },   // ring 1
+    { dur: 0.2, on: false },   // gap
+    { dur: 0.4, on: true  },   // ring 2
+    { dur: 2.0, on: false },   // pause
+  ];
+
+  function playStep() {
+    const { dur, on } = pattern[step % pattern.length];
+    if (on && ringCtx) {
+      const gain = ringCtx.createGain();
+      gain.gain.setValueAtTime(0, ringCtx.currentTime);
+      gain.gain.linearRampToValueAtTime(0.18, ringCtx.currentTime + 0.01);
+      gain.gain.linearRampToValueAtTime(0.18, ringCtx.currentTime + dur - 0.02);
+      gain.gain.linearRampToValueAtTime(0,    ringCtx.currentTime + dur);
+      gain.connect(ringCtx.destination);
+
+      [440, 480].forEach(freq => {
+        const osc = ringCtx.createOscillator();
+        osc.type = 'sine';
+        osc.frequency.value = freq;
+        osc.connect(gain);
+        osc.start(ringCtx.currentTime);
+        osc.stop(ringCtx.currentTime + dur);
+      });
+    }
+    step++;
+    ringInterval = setTimeout(playStep, dur * 1000);
+  }
+
+  playStep();
+}
+
+function stopRingtone() {
+  clearTimeout(ringInterval);
+  ringInterval = null;
+  if (ringCtx) { ringCtx.close().catch(() => {}); ringCtx = null; }
+}
+
+// ─── BOOT ────────────────────────────────────────────────────────────────────
+// Warn up-front if the page can't access camera/mic. In an insecure context
+// (file:// or plain http:// over a LAN IP) Safari/Chrome never even prompt, so
+// calls would silently be audio-only or fail. Flag it before the user tries.
+function checkSecureContext() {
+  if (!window.isSecureContext || !mediaSupported()) {
+    const txt = document.getElementById('status-txt');
+    if (txt) txt.textContent = 'Note: open over https:// or localhost to enable camera/mic';
+    setTimeout(() => showToast('⚠️ Camera/mic & screen share need https:// or localhost. As a file:// page, Safari won’t prompt for permission.'), 1200);
+  }
+}
+
+document.getElementById('footer-year').textContent = new Date().getFullYear();
+initPeer();
+checkSecureContext();
+</script>
+</body>
+</html>
