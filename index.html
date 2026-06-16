@@ -528,21 +528,24 @@
   }
 
   /* ─── INTRO / MANIFESTO SPLASH ───────────────────────────────────────────── */
-  #intro {
+  #intro, #invite-gate {
     position: fixed; inset: 0; z-index: 200;
     display: flex; align-items: center; justify-content: center;
     padding: 32px; text-align: center;
     background: radial-gradient(circle at 50% 32%, #17172a, var(--bg) 72%);
     opacity: 0; transition: opacity .8s ease;
   }
-  #intro.show { opacity: 1; }
-  #intro.hide { opacity: 0; pointer-events: none; }
+  /* invite gate fades in faster so it feels like entering directly */
+  #invite-gate { transition: opacity .45s ease; }
+  #intro.show, #invite-gate.show { opacity: 1; }
+  #intro.hide, #invite-gate.hide { opacity: 0; pointer-events: none; }
   .intro-inner {
     max-width: 560px; display: flex; flex-direction: column; align-items: center; gap: 18px;
     opacity: 0; transform: translateY(14px);
     transition: opacity 1s ease .25s, transform 1s ease .25s;
   }
-  #intro.show .intro-inner { opacity: 1; transform: translateY(0); }
+  #invite-gate .intro-inner { transition: opacity .5s ease .1s, transform .5s ease .1s; }
+  #intro.show .intro-inner, #invite-gate.show .intro-inner { opacity: 1; transform: translateY(0); }
   .intro-logo {
     width: 64px; height: 64px; border-radius: 16px; background: var(--accent);
     display: flex; align-items: center; justify-content: center;
@@ -592,6 +595,22 @@
     </div>
     <button class="btn btn-primary intro-btn" onclick="dismissIntro()">Enter the commons</button>
     <div class="intro-skip">tap anywhere to continue</div>
+  </div>
+</div>
+
+<!-- ══ INVITE GATE (shown only when arriving via an invite link) ═════════════ -->
+<div id="invite-gate" style="display:none">
+  <div class="intro-inner">
+    <div class="intro-logo">
+      <svg class="icon" width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+      </svg>
+    </div>
+    <div class="intro-eyebrow">Private invite</div>
+    <div class="intro-title">You&rsquo;re invited to chat</div>
+    <div class="intro-body">A direct, encrypted line &mdash; no account, no servers. Tap below to join.</div>
+    <button class="btn btn-primary intro-btn" id="invite-join-btn" onclick="joinFromInvite()">Join the chat</button>
+    <div class="intro-skip" id="invite-gate-status">Secure &amp; private</div>
   </div>
 </div>
 
@@ -995,6 +1014,9 @@ let peer, conn, activeCall, localStream;
 let muted = false;
 let pendingCall = null;
 let pendingConn = null;                 // incoming chat awaiting accept/decline
+let connecting = false;                 // an outbound connect attempt is in flight
+let connOpened = false;                 // has the current data channel ever opened
+let connectAttempts = 0;                // invite auto-retry counter
 let pendingMode = 'video';              // mode of the incoming call ('video'|'voice')
 let voiceMode = false;                  // call was started as voice-only
 let screenStream = null, sharing = false;
@@ -1075,7 +1097,7 @@ function initPeer() {
     document.getElementById('status-txt').textContent = 'Ready — share your invite link';
     document.getElementById('connect-btn').disabled = false;
     document.getElementById('invite-btn').disabled  = false;
-    maybeAutoConnect();   // if opened via an invite link, connect automatically
+    retryInvite();        // if opened via an invite link and the user tapped Join, connect
   });
 
   peer.on('error', err => {
@@ -1120,14 +1142,17 @@ function initPeer() {
   });
 }
 
-// Reconnect when user returns to the tab (after switching to WhatsApp etc.)
+// Reconnect when the user returns to the tab (after switching to WhatsApp etc.).
+// Critically, a brief tab switch must NOT cancel the session: we revive the
+// signalling link and, if an invite connection stalled while hidden, retry it.
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && peer) {
-    if (peer.destroyed) {
-      initPeer();
-    } else if (peer.disconnected) {
-      peer.reconnect();
-    }
+  if (document.visibilityState !== 'visible' || !peer) return;
+  if (peer.destroyed)        initPeer();
+  else if (peer.disconnected) peer.reconnect();
+  // Resume an invite connection that never finished negotiating while hidden.
+  if (joinConfirmed && autoConnectId && (!conn || !conn.open)) {
+    connecting = false;                 // clear any stuck in-flight flag
+    setTimeout(retryInvite, 600);       // give the signalling link a moment first
   }
 });
 
@@ -1138,6 +1163,8 @@ function connectToPeer() {
   if (!peer || !peer.id) { showToast('Still connecting to the signalling server…'); return; }
   if (id === peer.id) { showToast("That's your own ID — share it with someone else"); return; }
   if (conn && conn.open) { showToast('Already connected'); return; }
+  if (connecting) return;                 // an attempt is already in flight
+  connecting = true;
   document.getElementById('status-txt').textContent = 'Connecting — waiting for them to accept…';
   // serialization:'raw' lets us send ArrayBuffers directly for file chunks
   conn = peer.connect(id, { reliable: true, serialization: 'raw' });
@@ -1159,15 +1186,19 @@ function declineConn() {
 }
 
 function setupDataChannel() {
-  // Timeout: if not open within 15 s, surface an error
+  connOpened = false;
+  // Soft timeout: never hard-fail (and never while the tab is backgrounded —
+  // negotiation often stalls then). Just nudge the user; the channel can still
+  // open once the other side taps Accept.
   const timeout = setTimeout(() => {
-    if (!conn || conn.open) return;
-    showToast('⚠️ Connection timed out — check the peer ID and retry');
-    document.getElementById('status-txt').textContent = 'Connection failed';
-  }, 15000);
+    if (connOpened || !conn || conn.open || document.hidden) return;
+    document.getElementById('status-txt').textContent = 'Still connecting… they may need to tap Accept';
+    updateGateStatus('Still connecting… ask them to tap Accept');
+  }, 20000);
 
   const onOpen = () => {
     clearTimeout(timeout);
+    connOpened = true; connecting = false; connectAttempts = 0;
     // Force ArrayBuffer delivery for binary. The RTCDataChannel binaryType
     // default differs across browsers ('blob' on some Firefox/Safari builds),
     // which would otherwise break file-chunk parsing. This guarantees we get
@@ -1176,6 +1207,7 @@ function setupDataChannel() {
     if (channel) channel.binaryType = 'arraybuffer';
     document.getElementById('connected-peer-id').textContent = conn.peer;
     showApp();
+    fadeOutInviteGate();   // reveal the chat directly for invite-link openers
     appendSystem('Connected ✓');
   };
   // An accepted incoming connection may already be open by the time we attach
@@ -1201,14 +1233,49 @@ function setupDataChannel() {
   });
 
   conn.on('close', () => {
-    conn = null;          // connection is gone
-    hangUp(false);        // tear down any in-progress call + release camera/mic
+    clearTimeout(timeout);
+    if (!connOpened) {           // negotiation died before it ever connected
+      connecting = false; conn = null;
+      handleNegotiationFail();   // retry (invite) instead of dumping to lobby
+      return;
+    }
+    conn = null;                 // an established session genuinely ended
+    hangUp(false);
     resetToLobby('Peer disconnected — session ended');
   });
   conn.on('error', err => {
     clearTimeout(timeout);
-    showToast('Connection error: ' + (err.message || err.type));
+    if (!connOpened) { connecting = false; conn = null; handleNegotiationFail(); }
+    else showToast('Connection error: ' + (err.message || err.type));
   });
+}
+
+// A connection attempt failed before opening. For invite-link openers, retry
+// quietly (negotiation commonly drops when the tab is briefly backgrounded)
+// rather than bouncing them to a confusing lobby.
+function handleNegotiationFail() {
+  if (joinConfirmed && autoConnectId) {
+    if (document.hidden) return;            // wait; visibilitychange will retry
+    if (connectAttempts < 3) {
+      connectAttempts++;
+      updateGateStatus('Reconnecting…');
+      document.getElementById('status-txt').textContent = 'Reconnecting…';
+      setTimeout(retryInvite, 1000);
+    } else {
+      updateGateStatus('Couldn’t connect. Tap to try again.', true);
+    }
+  } else {
+    document.getElementById('status-txt').textContent = 'Couldn’t connect — check the ID and retry';
+  }
+}
+
+function retryInvite() {
+  if (!joinConfirmed || !autoConnectId) return;
+  if ((conn && conn.open) || connecting) return;
+  if (!peer || !peer.id) return;            // not ready yet; peer 'open' will call us
+  if (conn && !conn.open) { try { conn.close(); } catch {} conn = null; }
+  document.getElementById('peer-input').value = autoConnectId;
+  connectToPeer();
 }
 
 // Reconstruct a tagged file chunk: [4-byte idLen][id bytes][payload].
@@ -1293,14 +1360,37 @@ let autoConnectId = (() => {
   } catch { return ''; }
 })();
 
-function maybeAutoConnect() {
-  if (!autoConnectId) return;
-  const target = autoConnectId;
-  autoConnectId = '';                       // ensure we only auto-connect once
-  if (!peer || !peer.id || target === peer.id || (conn && conn.open)) return;
-  document.getElementById('peer-input').value = target;
-  document.getElementById('status-txt').textContent = 'Connecting via invite link…';
-  connectToPeer();
+// ── Invite-link entry ────────────────────────────────────────────────────────
+// Invite openers skip the intro and see a quick "Join" confirm. The confirm tap
+// also unlocks audio and satisfies the browser's user-gesture requirement.
+let joinConfirmed = false;
+
+function showInviteGate() {
+  const g = document.getElementById('invite-gate');
+  if (!g) return;
+  g.style.display = 'flex';
+  requestAnimationFrame(() => g.classList.add('show'));
+}
+function joinFromInvite() {
+  joinConfirmed = true;
+  connectAttempts = 0;                      // fresh round of auto-retries
+  getAudioCtx();                            // unlock audio on this gesture
+  const btn = document.getElementById('invite-join-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Connecting…'; }
+  updateGateStatus('Connecting securely…');
+  retryInvite();                            // connect now, or on peer 'open'
+}
+function updateGateStatus(text, showRetry) {
+  const st = document.getElementById('invite-gate-status');
+  if (st) st.textContent = text;
+  const btn = document.getElementById('invite-join-btn');
+  if (btn && showRetry) { btn.disabled = false; btn.textContent = 'Try again'; }
+}
+function fadeOutInviteGate() {
+  const g = document.getElementById('invite-gate');
+  if (!g || g.classList.contains('hide')) return;
+  g.classList.add('hide');
+  setTimeout(() => g.remove(), 600);
 }
 
 function shareId() {
@@ -2105,7 +2195,14 @@ if (typeof HTMLMediaElement !== 'undefined' && 'setSinkId' in HTMLMediaElement.p
 }
 
 document.getElementById('footer-year').textContent = new Date().getFullYear();
-initIntro();
+// Invite-link openers skip the manifesto intro and get a fast "Join" confirm.
+if (autoConnectId) {
+  const intro = document.getElementById('intro');
+  if (intro) intro.remove();
+  showInviteGate();
+} else {
+  initIntro();
+}
 initPeer();
 checkSecureContext();
 </script>
