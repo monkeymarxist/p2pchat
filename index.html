@@ -309,10 +309,16 @@
   /* floating call bar (shown during active call, inside video panel) */
   .call-bar {
     position: absolute; bottom: 0; left: 0; right: 0;
-    display: flex; align-items: center; justify-content: center; gap: 10px;
+    display: flex; align-items: flex-end; justify-content: center; gap: 12px;
+    flex-wrap: wrap; row-gap: 8px;
     padding: 12px 16px;
     background: linear-gradient(to top, rgba(0,0,0,.85), transparent);
     backdrop-filter: blur(2px);
+  }
+  .cb-item { display: flex; flex-direction: column; align-items: center; gap: 5px; }
+  .cb-label {
+    font-size: .6rem; font-weight: 500; color: rgba(255,255,255,.66);
+    letter-spacing: .02em; white-space: nowrap;
   }
   .call-bar-btn {
     width: 44px; height: 44px; border-radius: 50%; border: none; cursor: pointer;
@@ -815,47 +821,70 @@
         <div class="voice-sub" id="voice-peer"></div>
       </div>
 
-      <!-- floating call controls -->
+      <!-- floating call controls (each has a label under it) -->
       <div class="call-bar">
-        <!-- mute -->
-        <button class="call-bar-btn normal" id="btn-mute" title="Mute" onclick="toggleMute()">
-          <svg id="ico-mic" class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
-            <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-            <line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/>
-          </svg>
-        </button>
+        <div class="cb-item">
+          <button class="call-bar-btn normal" id="btn-mute" aria-label="Mute microphone" onclick="toggleMute()"></button>
+          <span class="cb-label" id="lbl-mute">Mute</span>
+        </div>
 
-        <!-- end call — centre, bigger -->
-        <button class="call-bar-btn end" id="btn-hangup" title="End call" onclick="hangUp()">
-          <svg class="icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92v3a2 2 0 0 1-2.18 2A18 18 0 0 1 3 5.18 2 2 0 0 1 5 3h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.91 10.91"/>
-            <line x1="22" y1="2" x2="2" y2="22"/>
-          </svg>
-        </button>
+        <!-- switch audio output (speaker) — only shown where the browser supports it -->
+        <div class="cb-item" id="item-speaker" style="display:none">
+          <button class="call-bar-btn normal" id="btn-speaker" aria-label="Switch audio output" onclick="switchOutput()">
+            <svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M11 4.7a.7.7 0 0 0-1.2-.5L6.4 7.6A1.4 1.4 0 0 1 5.4 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.4a1.4 1.4 0 0 1 1 .4l3.4 3.4a.7.7 0 0 0 1.2-.5z"/>
+              <path d="M16 9a5 5 0 0 1 0 6"/><path d="M19.4 5.6a9 9 0 0 1 0 12.7"/>
+            </svg>
+          </button>
+          <span class="cb-label">Speaker</span>
+        </div>
 
-        <!-- camera toggle -->
-        <button class="call-bar-btn normal" id="btn-cam" title="Toggle camera" onclick="toggleCamera()">
-          <svg id="ico-cam" class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <polygon points="23 7 16 12 23 17 23 7"/>
-            <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
-          </svg>
-        </button>
+        <!-- end call — centre, bigger. Classic "hang up": a handset rotated down. -->
+        <div class="cb-item">
+          <button class="call-bar-btn end" id="btn-hangup" aria-label="End call" onclick="hangUp()">
+            <svg class="icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <g transform="rotate(135 12 12)">
+                <path d="M13.832 16.568a1 1 0 0 0 1.213-.303l.355-.465A2 2 0 0 1 17 15h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2A18 18 0 0 1 2 4a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v3a2 2 0 0 1-.8 1.6l-.468.351a1 1 0 0 0-.292 1.233 14 14 0 0 0 6.392 6.384"/>
+              </g>
+            </svg>
+          </button>
+          <span class="cb-label" style="color:#fca5a5">End</span>
+        </div>
 
-        <!-- screen share -->
-        <button class="call-bar-btn normal" id="btn-screen" title="Share screen" onclick="toggleScreenShare()">
-          <svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
-            <line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
-          </svg>
-        </button>
+        <div class="cb-item">
+          <button class="call-bar-btn normal" id="btn-cam" aria-label="Toggle camera" onclick="toggleCamera()"></button>
+          <span class="cb-label">Camera</span>
+        </div>
 
-        <!-- show / hide chat -->
-        <button class="call-bar-btn normal" id="btn-chat" title="Show/hide chat" onclick="toggleChat()">
-          <svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-          </svg>
-        </button>
+        <!-- flip front/rear camera — shown when a camera is on and more than one exists -->
+        <div class="cb-item" id="item-flip" style="display:none">
+          <button class="call-bar-btn normal" id="btn-flip" aria-label="Switch front/rear camera" onclick="flipCamera()">
+            <svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M11 19H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5"/><path d="M13 5h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-5"/>
+              <circle cx="12" cy="12" r="3"/><path d="m18 22 3-3-3-3"/><path d="m6 2-3 3 3 3"/>
+            </svg>
+          </button>
+          <span class="cb-label">Flip</span>
+        </div>
+
+        <div class="cb-item">
+          <button class="call-bar-btn normal" id="btn-screen" aria-label="Share screen" onclick="toggleScreenShare()">
+            <svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+              <line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+            </svg>
+          </button>
+          <span class="cb-label">Screen</span>
+        </div>
+
+        <div class="cb-item">
+          <button class="call-bar-btn normal" id="btn-chat" aria-label="Show or hide chat" onclick="toggleChat()">
+            <svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+            </svg>
+          </button>
+          <span class="cb-label">Chat</span>
+        </div>
       </div>
     </div>
 
@@ -972,6 +1001,9 @@ let screenStream = null, sharing = false;
 let camOn = false;                      // is a real camera currently being sent
 let camTrack = null;                    // the real camera track (when camOn)
 let blankTrack = null;                  // "Camera off" placeholder video track
+let facingMode = 'user';                // 'user' (front) | 'environment' (rear)
+let hasMultiCam = false;                // more than one camera → show flip button
+let sinkIndex = 0;                      // current audio-output device index
 
 // Friendly starting state for the message area (reused after disconnect).
 const EMPTY_CHAT_HTML =
@@ -1587,6 +1619,7 @@ function initVideoState() {
   sharing = false;
   videoActive = camOn;          // we send real video only if a camera is on
   remoteVideoActive = false;
+  if (camOn) detectCameras();   // figure out whether to show the flip button
 }
 
 async function startCall(mode) {
@@ -1654,6 +1687,7 @@ function hangUp(notify = true) {
   if (localStream)  { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
   clearInterval(blankTimer); blankTimer = null; blankTrack = null;
   sharing = false; camOn = false; videoActive = false; remoteVideoActive = false;
+  facingMode = 'user'; hasMultiCam = false; sinkIndex = 0;
   document.getElementById('local-video').srcObject  = null;
   document.getElementById('remote-video').srcObject = null;
   showCallUI(false);
@@ -1797,8 +1831,9 @@ async function toggleCamera() {
     if (!camTrack || camTrack.readyState === 'ended') {
       if (!mediaSupported()) { showToast('Camera needs an https:// or localhost page'); return; }
       try {
-        const s = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: facingMode } }, audio: false });
         camTrack = s.getVideoTracks()[0];
+        detectCameras();
       } catch (e) { appendSystem('⚠️ ' + explainMediaError(e)); return; }
     }
     camOn = true;
@@ -1809,12 +1844,51 @@ async function toggleCamera() {
   applyVideo();
 }
 
+// Switch between front (user) and rear (environment) cameras mid-call.
+async function flipCamera() {
+  if (!camOn) { showToast('Turn the camera on first'); return; }
+  const next = (facingMode === 'user') ? 'environment' : 'user';
+  try {
+    const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: next } }, audio: false });
+    if (camTrack) camTrack.stop();
+    camTrack = s.getVideoTracks()[0];
+    facingMode = next;
+    applyVideo();
+    showToast(next === 'environment' ? 'Rear camera' : 'Front camera');
+  } catch (e) { showToast('Could not switch camera'); }
+}
+
+// Cycle the audio output device (speaker / headphones / etc.). Only available
+// where the browser supports setSinkId (desktop Chrome/Edge); the button is
+// hidden elsewhere, since phones let the OS control routing.
+async function switchOutput() {
+  const v = document.getElementById('remote-video');
+  if (!v || typeof v.setSinkId !== 'function') { showToast('Your browser controls audio output'); return; }
+  try {
+    const outs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audiooutput');
+    if (outs.length < 2) { showToast('Only one audio output available'); return; }
+    sinkIndex = (sinkIndex + 1) % outs.length;
+    await v.setSinkId(outs[sinkIndex].deviceId);
+    showToast('Output: ' + (outs[sinkIndex].label || ('Device ' + (sinkIndex + 1))));
+  } catch (e) { showToast('Could not switch output'); }
+}
+
+async function detectCameras() {
+  try {
+    const devs = await navigator.mediaDevices.enumerateDevices();
+    hasMultiCam = devs.filter(d => d.kind === 'videoinput').length > 1;
+  } catch { hasMultiCam = false; }
+  syncCamUI();
+}
+
 function syncCamUI() {
   const btn = document.getElementById('btn-cam');
   if (!btn) return;
   btn.innerHTML = camOn ? ICO.cam : ICO.camOff;
   btn.className = 'call-bar-btn ' + (camOn ? 'normal' : 'cam-off');
   btn.title = camOn ? 'Turn off camera' : 'Turn on camera';
+  const flip = document.getElementById('item-flip');
+  if (flip) flip.style.display = (camOn && hasMultiCam) ? '' : 'none';
 }
 
 // Decide which video track to send (screen > camera > placeholder), push it to
@@ -1966,16 +2040,69 @@ function dismissIntro() {
   setTimeout(() => intro.remove(), 850);
 }
 
-// Lobby disclosures behave like an accordion: opening one closes the others,
-// so the lobby stays compact and rarely needs the internal scroll.
-document.querySelectorAll('.lobby-advanced').forEach(d => {
-  d.addEventListener('toggle', () => {
-    if (!d.open) return;
-    document.querySelectorAll('.lobby-advanced[open]').forEach(o => { if (o !== d) o.open = false; });
-    // keep the just-opened panel in view within the lobby
+// Smoothly animate the lobby disclosures (native <details> snaps instantly).
+// Also acts as an accordion: opening one closes the others.
+const REDUCE_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+function openPanel(d) {
+  document.querySelectorAll('.lobby-advanced[open]').forEach(o => { if (o !== d) closePanel(o); });
+  const body = d.querySelector('.advanced-body');
+  d.open = true;
+  if (!body || REDUCE_MOTION) return;
+  d.dataset.animating = '1';
+  body.style.overflow = 'hidden';
+  body.style.opacity = '0';
+  body.style.maxHeight = '0px';
+  requestAnimationFrame(() => {
+    body.style.transition = 'max-height .32s ease, opacity .32s ease';
+    body.style.maxHeight = body.scrollHeight + 'px';
+    body.style.opacity = '1';
+  });
+  body.addEventListener('transitionend', function done(e) {
+    if (e.propertyName !== 'max-height') return;
+    body.removeEventListener('transitionend', done);
+    body.style.maxHeight = body.style.transition = body.style.overflow = body.style.opacity = '';
+    delete d.dataset.animating;
     d.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   });
+}
+
+function closePanel(d) {
+  const body = d.querySelector('.advanced-body');
+  if (!body || REDUCE_MOTION) { d.open = false; return; }
+  d.dataset.animating = '1';
+  body.style.overflow = 'hidden';
+  body.style.transition = 'none';
+  body.style.maxHeight = body.scrollHeight + 'px';
+  body.style.opacity = '1';
+  requestAnimationFrame(() => {
+    body.style.transition = 'max-height .26s ease, opacity .26s ease';
+    body.style.maxHeight = '0px';
+    body.style.opacity = '0';
+  });
+  body.addEventListener('transitionend', function done(e) {
+    if (e.propertyName !== 'max-height') return;
+    body.removeEventListener('transitionend', done);
+    d.open = false;
+    body.style.maxHeight = body.style.transition = body.style.overflow = body.style.opacity = '';
+    delete d.dataset.animating;
+  });
+}
+
+document.querySelectorAll('.lobby-advanced').forEach(d => {
+  const summary = d.querySelector('summary');
+  if (!summary) return;
+  summary.addEventListener('click', e => {
+    e.preventDefault();                       // we drive open/close ourselves
+    if (d.dataset.animating) return;
+    d.open ? closePanel(d) : openPanel(d);
+  });
 });
+
+// Show the speaker/output switch only where the browser can actually route audio.
+if (typeof HTMLMediaElement !== 'undefined' && 'setSinkId' in HTMLMediaElement.prototype) {
+  document.getElementById('item-speaker').style.display = '';
+}
 
 document.getElementById('footer-year').textContent = new Date().getFullYear();
 initIntro();
