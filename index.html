@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-<title>P2P Chat - Monkey Marxist</title>
+<title>P2P Chat</title>
 
 <!-- Content-Security-Policy: defence-in-depth. The only external resource is the
      PeerJS library (loaded from jsDelivr and pinned with Subresource Integrity).
@@ -121,6 +121,26 @@
     background: var(--surface); border: 1px solid var(--border);
     border-radius: var(--radius); padding: 16px; margin-top: 4px;
   }
+  .hiw { gap: 14px; }
+  .hiw-row { display: flex; gap: 11px; align-items: flex-start; font-size: .82rem; color: var(--text2); line-height: 1.5; }
+  .hiw-row b { color: var(--text); font-weight: 600; }
+  .hiw-ico {
+    flex-shrink: 0; width: 30px; height: 30px; border-radius: 8px;
+    background: var(--accent-dim); color: var(--accent);
+    display: flex; align-items: center; justify-content: center; margin-top: 1px;
+  }
+  .hiw-foot {
+    font-size: .72rem; color: var(--text3); line-height: 1.5;
+    border-top: 1px solid var(--border); padding-top: 12px;
+  }
+  .about p { font-size: .85rem; color: var(--text2); line-height: 1.65; }
+  .about-credit {
+    display: flex; flex-direction: column; gap: 4px;
+    border-top: 1px solid var(--border); padding-top: 12px;
+    font-size: .8rem; color: var(--text);
+  }
+  .about-credit a { display: inline-flex; align-items: center; gap: 5px; color: var(--accent); text-decoration: none; width: fit-content; }
+  .about-credit a:hover { text-decoration: underline; }
   .lobby-tool {
     background: var(--surface2); border: 1px solid var(--border); color: var(--text2);
     padding: 10px; width: 100%; max-width: 400px;
@@ -610,6 +630,93 @@
       </button>
     </div>
   </div>
+
+  <!-- Trust / reassurance -->
+  <details class="lobby-advanced" id="how-it-works">
+    <summary>How it works · Is this private?</summary>
+    <div class="advanced-body hiw">
+      <div class="hiw-row">
+        <span class="hiw-ico">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        </span>
+        <div><b>Encrypted, end to end.</b> Every message, file and call is scrambled in transit by WebRTC — only the two of you hold the keys.</div>
+      </div>
+      <div class="hiw-row">
+        <span class="hiw-ico">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5-7 7 7 7"/><path d="m12 5 7 7-7 7"/></svg>
+        </span>
+        <div><b>Straight between you.</b> Data travels browser-to-browser. It never lands on our servers — because there are none.</div>
+      </div>
+      <div class="hiw-row">
+        <span class="hiw-ico">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+        </span>
+        <div><b>No accounts, no logs, no history.</b> Nothing is stored anywhere. Close the tab and the conversation is gone for good.</div>
+      </div>
+      <div class="hiw-row">
+        <span class="hiw-ico">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+        </span>
+        <div><b>You decide who's in.</b> Every connection and call waits for your tap to <i>Accept</i> — nobody joins without permission.</div>
+      </div>
+      <div class="hiw-foot">A small public directory helps the two browsers find each other to shake hands. It never sees your messages, files or calls.</div>
+    </div>
+  </details>
+
+  <!-- Feature overview -->
+  <details class="lobby-advanced">
+    <summary>What can I do here?</summary>
+    <div class="advanced-body hiw">
+      <div class="hiw-row">
+        <span class="hiw-ico">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        </span>
+        <div><b>Text chat.</b> Send encrypted messages in real time.</div>
+      </div>
+      <div class="hiw-row">
+        <span class="hiw-ico">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13.832 16.568a1 1 0 0 0 1.213-.303l.355-.465A2 2 0 0 1 17 15h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2A18 18 0 0 1 2 4a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v3a2 2 0 0 1-.8 1.6l-.468.351a1 1 0 0 0-.292 1.233 14 14 0 0 0 6.392 6.384"/></svg>
+        </span>
+        <div><b>Voice call.</b> Talk with clear audio — no phone number required.</div>
+      </div>
+      <div class="hiw-row">
+        <span class="hiw-ico">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 13 5.22 3.48a.5.5 0 0 0 .78-.42V7.94a.5.5 0 0 0-.78-.42L16 11"/><rect x="2" y="6" width="14" height="12" rx="2"/></svg>
+        </span>
+        <div><b>Video call.</b> See each other face to face.</div>
+      </div>
+      <div class="hiw-row">
+        <span class="hiw-ico">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg>
+        </span>
+        <div><b>Share your screen.</b> Present during a call — you can even switch it on mid-call.</div>
+      </div>
+      <div class="hiw-row">
+        <span class="hiw-ico">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+        </span>
+        <div><b>Send files.</b> Photos, documents, anything — delivered directly, never uploaded to a server.</div>
+      </div>
+      <div class="hiw-foot">Once connected: tap the green camera for video, the purple phone for voice, and the paperclip to send a file.</div>
+    </div>
+  </details>
+
+  <!-- About / why -->
+  <details class="lobby-advanced">
+    <summary>Who made this and why?</summary>
+    <div class="advanced-body about">
+      <p>I started this just to call my wife and family, without some app sitting in the middle, listening in. It worked so well that I figured everyone should have it.</p>
+      <p>So I made the code public: free to read, free to run, free to build on. Talking to the people you love shouldn&rsquo;t cost you your privacy.</p>
+      <p>Got an idea or spot something to fix? DM me on X &mdash; I&rsquo;d love to hear it.</p>
+      <div class="about-credit">
+        <span>Monkey Marxist, from God&rsquo;s own Country</span>
+        <a href="https://x.com/monkeymarxist" target="_blank" rel="noopener noreferrer" aria-label="Monkey Marxist on X">
+          <svg class="icon" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+          @monkeymarxist
+        </a>
+      </div>
+    </div>
+  </details>
 
   <!-- Join manually (folded away so newcomers aren't confronted with peer IDs) -->
   <details class="lobby-advanced">
