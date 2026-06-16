@@ -1,6 +1,16 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+<!--
+  ╔══════════════════════════════════════════════════════════════════╗
+  ║  P2PChat — private, serverless, end-to-end-encrypted chat & calls  ║
+  ╠══════════════════════════════════════════════════════════════════╣
+  ║  Author:        Monkey Marxist, from God's own Country             ║
+  ║  X / Twitter:   https://x.com/monkeymarxist                        ║
+  ║  Ethos:         No accounts. No logs. No servers in the middle.    ║
+  ║  Last revised:  2026-06-16                                         ║
+  ╚══════════════════════════════════════════════════════════════════╝
+-->
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <title>P2P Chat</title>
@@ -687,27 +697,33 @@
         <span class="hiw-ico">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
         </span>
-        <div><b>Encrypted, end to end.</b> Every message, file and call is scrambled in transit by WebRTC — only the two of you hold the keys.</div>
+        <div><b>Encrypted, end to end.</b> Every message, file and call is scrambled in transit by WebRTC. Only the two of you hold the keys.</div>
       </div>
       <div class="hiw-row">
         <span class="hiw-ico">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5-7 7 7 7"/><path d="m12 5 7 7-7 7"/></svg>
         </span>
-        <div><b>Straight between you.</b> Data travels browser-to-browser. It never lands on our servers — because there are none.</div>
+        <div><b>Direct.</b> Data travels browser-to-browser. It doesn’t pass through our servers.</div>
+      </div>
+      <div class="hiw-row">
+        <span class="hiw-ico">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6" y2="6"/><line x1="6" y1="18" x2="6" y2="18"/></svg>
+        </span>
+        <div><b>Relay only if needed.</b> If a network blocks the direct link, an encrypted relay passes it along — it still can’t read a thing.</div>
       </div>
       <div class="hiw-row">
         <span class="hiw-ico">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
         </span>
-        <div><b>No accounts, no logs, no history.</b> Nothing is stored anywhere. Close the tab and the conversation is gone for good.</div>
+        <div><b>Nothing saved.</b> No accounts, no history. Close the tab and it’s gone.</div>
       </div>
       <div class="hiw-row">
         <span class="hiw-ico">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
         </span>
-        <div><b>You decide who's in.</b> Every connection and call waits for your tap to <i>Accept</i> — nobody joins without permission.</div>
+        <div><b>You approve.</b> Nobody connects until you tap <i>Accept</i>.</div>
       </div>
-      <div class="hiw-foot">A small public directory helps the two browsers find each other to shake hands. It never sees your messages, files or calls.</div>
+      <div class="hiw-foot">A small directory just helps two browsers find each other. It never sees your chats.</div>
     </div>
   </details>
 
@@ -1038,6 +1054,7 @@ let connectAttempts = 0;                // invite auto-retry counter
 let isInitiator = false;                // true = we dialled out (must await Accept)
 let chatEntered = false;                // are we actually inside the chat room
 let declinedByPeer = false;             // the other side declined our request
+let tearingDown = false;                // we intentionally ended → ignore stray close events
 let pendingMode = 'video';              // mode of the incoming call ('video'|'voice')
 let voiceMode = false;                  // call was started as voice-only
 let screenStream = null, sharing = false;
@@ -1134,6 +1151,13 @@ function initPeer() {
       sessionStorage.removeItem('myPeerId');
       peer.destroy();
       initPeer();
+      return;
+    }
+    // Connection-level problems (dialled an offline/expired ID, transient
+    // network blip) don't mean OUR peer is broken — just inform, don't flip the
+    // lobby into a red error state.
+    if (['peer-unavailable', 'network', 'webrtc'].includes(err.type)) {
+      showToast('⚠️ ' + (err.message || err.type));
       return;
     }
     document.getElementById('status-dot').classList.add('error');
@@ -1295,6 +1319,7 @@ function setupDataChannel() {
 
   conn.on('close', () => {
     clearTimeout(timeout);
+    if (tearingDown) { conn = null; return; }   // we ended it on purpose
     if (!connOpened) {           // negotiation died before it ever connected
       connecting = false; conn = null;
       handleNegotiationFail();   // retry (invite) instead of dumping to lobby
@@ -1306,6 +1331,7 @@ function setupDataChannel() {
   });
   conn.on('error', err => {
     clearTimeout(timeout);
+    if (tearingDown) { conn = null; return; }
     if (!connOpened) { connecting = false; conn = null; handleNegotiationFail(); }
     else showToast('Connection error: ' + (err.message || err.type));
   });
@@ -1414,6 +1440,7 @@ function onDeclined() {
 // User-initiated full disconnect. Closing conn notifies the peer (their
 // conn.on('close') fires) so both ends return to the lobby.
 function endSession() {
+  tearingDown = true;
   if (conn) { try { conn.close(); } catch {} }
   hangUp(false);
   resetToLobby('Session ended');
@@ -1421,10 +1448,14 @@ function endSession() {
 
 // Tear everything down and go back to the lobby (reusable for a fresh session).
 function resetToLobby(note) {
+  tearingDown = true;
   if (conn) { try { conn.close(); } catch {} conn = null; }
   for (const k in fileChunks) delete fileChunks[k];
   totalBuffered = 0;
   chatEntered = false; isInitiator = false; connecting = false; connOpened = false;
+  // Forget the invite target so we don't silently auto-redial after leaving.
+  joinConfirmed = false; autoConnectId = '';
+  setTimeout(() => { tearingDown = false; }, 1500);
   document.getElementById('app').style.display   = 'none';
   document.getElementById('lobby').style.display = 'flex';
   document.getElementById('messages').innerHTML  = EMPTY_CHAT_HTML;
@@ -1742,7 +1773,7 @@ async function getMedia(mode) {
     appendSystem('⚠️ ' + (window.isSecureContext
       ? 'This browser does not expose camera/mic access.'
       : 'Camera/mic blocked - open this page over https:// or localhost, not file://. Safari never prompts otherwise.'));
-    return wantVideo ? ensureVideoTrack(new MediaStream()) : new MediaStream();
+    return ensureVideoTrack(new MediaStream());
   }
   try {
     const s = await navigator.mediaDevices.getUserMedia({ video: wantVideo, audio: true });
