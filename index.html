@@ -48,6 +48,17 @@
     --radius-sm: 8px;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
+  #inapp-warn {
+    display: none; position: fixed; top: 0; left: 0; right: 0; z-index: 300;
+    background: var(--amber); color: #2a1c02; font-size: .76rem; line-height: 1.4;
+    padding: 9px 14px; padding-top: calc(9px + env(safe-area-inset-top));
+    align-items: center; gap: 10px; justify-content: center; text-align: center;
+  }
+  #inapp-warn.show { display: flex; }
+  #inapp-warn button {
+    background: rgba(0,0,0,.16); border: none; color: #2a1c02; flex-shrink: 0;
+    border-radius: 6px; width: 22px; height: 22px; cursor: pointer; font-size: .8rem;
+  }
   body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     background: var(--bg);
@@ -572,6 +583,13 @@
 </head>
 <body>
 
+<!-- In-app browsers (links opened inside WhatsApp/Instagram/etc.) have broken
+     WebRTC on Android, so the call/chat link can't form. Warn and guide. -->
+<div id="inapp-warn">
+  <span>⚠️ For chat &amp; calls to work, open this page in your browser — tap the <b>⋮</b> menu, then <b>“Open in Chrome”</b>.</span>
+  <button onclick="document.getElementById('inapp-warn').remove()" aria-label="Dismiss">✕</button>
+</div>
+
 <!-- ══ INTRO / MANIFESTO ════════════════════════════════════════════════════ -->
 <div id="intro" onclick="dismissIntro()">
   <div class="intro-inner" onclick="event.stopPropagation()">
@@ -1017,6 +1035,9 @@ let pendingConn = null;                 // incoming chat awaiting accept/decline
 let connecting = false;                 // an outbound connect attempt is in flight
 let connOpened = false;                 // has the current data channel ever opened
 let connectAttempts = 0;                // invite auto-retry counter
+let isInitiator = false;                // true = we dialled out (must await Accept)
+let chatEntered = false;                // are we actually inside the chat room
+let declinedByPeer = false;             // the other side declined our request
 let pendingMode = 'video';              // mode of the incoming call ('video'|'voice')
 let voiceMode = false;                  // call was started as voice-only
 let screenStream = null, sharing = false;
@@ -1120,6 +1141,16 @@ function initPeer() {
     pendingConn = c;
     document.getElementById('conn-modal-from').textContent = c.peer;
     document.getElementById('conn-modal').style.display = 'flex';
+    // Ring + flash the tab title so you notice even from another tab.
+    startRingtone();
+    startTitleAlert('🔔 Someone wants to chat');
+    // If they give up before you answer, stop ringing and clear the prompt.
+    c.on('close', () => {
+      if (pendingConn !== c) return;
+      pendingConn = null;
+      stopRingtone(); stopTitleAlert();
+      document.getElementById('conn-modal').style.display = 'none';
+    });
   });
 
   peer.on('call', call => {
@@ -1132,6 +1163,7 @@ function initPeer() {
     document.getElementById('call-modal-from').textContent = call.peer;
     document.getElementById('call-modal').classList.add('visible');
     startRingtone();
+    startTitleAlert('🔔 Incoming call');
   });
 
   peer.on('disconnected', () => {
@@ -1164,7 +1196,7 @@ function connectToPeer() {
   if (id === peer.id) { showToast("That's your own ID — share it with someone else"); return; }
   if (conn && conn.open) { showToast('Already connected'); return; }
   if (connecting) return;                 // an attempt is already in flight
-  connecting = true;
+  connecting = true; isInitiator = true;  // we dialled → we wait for their Accept
   document.getElementById('status-txt').textContent = 'Connecting — waiting for them to accept…';
   // serialization:'raw' lets us send ArrayBuffers directly for file chunks
   conn = peer.connect(id, { reliable: true, serialization: 'raw' });
@@ -1173,20 +1205,29 @@ function connectToPeer() {
 
 // Accept / decline an incoming chat request (consent before connecting).
 function acceptConn() {
+  stopRingtone(); stopTitleAlert();
   document.getElementById('conn-modal').style.display = 'none';
   if (!pendingConn) return;
   conn = pendingConn;
   pendingConn = null;
+  isInitiator = false;          // we are the one accepting → we enter immediately
   setupDataChannel();
 }
 
 function declineConn() {
+  stopRingtone(); stopTitleAlert();
   document.getElementById('conn-modal').style.display = 'none';
-  if (pendingConn) { pendingConn.close(); pendingConn = null; }
+  const c = pendingConn;
+  pendingConn = null;
+  if (!c) return;
+  // Tell the requester they were declined (their side is technically open),
+  // then close after a beat so the message flushes.
+  try { if (c.open) c.send(JSON.stringify({ type: 'declined' })); } catch {}
+  setTimeout(() => { try { c.close(); } catch {} }, 200);
 }
 
 function setupDataChannel() {
-  connOpened = false;
+  connOpened = false; chatEntered = false; declinedByPeer = false; troubleShown = false;
   // Soft timeout: never hard-fail (and never while the tab is backgrounded —
   // negotiation often stalls then). Just nudge the user; the channel can still
   // open once the other side taps Accept.
@@ -1205,14 +1246,22 @@ function setupDataChannel() {
     // ArrayBuffers everywhere (Chrome/Firefox/Safari, desktop + mobile).
     const channel = rawChannel();
     if (channel) channel.binaryType = 'arraybuffer';
-    document.getElementById('connected-peer-id').textContent = conn.peer;
-    showApp();
-    fadeOutInviteGate();   // reveal the chat directly for invite-link openers
-    appendSystem('Connected ✓');
+    if (isInitiator) {
+      // The data channel is open at the WebRTC level, but the other person
+      // hasn't tapped Accept yet. WAIT — do not show the chat or let them type.
+      document.getElementById('status-txt').textContent = 'Waiting for them to accept…';
+      updateGateStatus('Waiting for them to accept…');
+    } else {
+      // We're the one who accepted: enter now and tell the requester they're in.
+      try { conn.send(JSON.stringify({ type: 'accepted' })); } catch {}
+      enterChat();
+    }
   };
   // An accepted incoming connection may already be open by the time we attach
   // handlers — in that case fire onOpen directly so we don't miss the event.
   if (conn.open) onOpen(); else conn.on('open', onOpen);
+
+  monitorIce(conn);   // surface a clear message if the P2P link can't be formed
 
   conn.on('data', raw => {
     // Binary (file chunk) can arrive as ArrayBuffer, a typed-array view, or a
@@ -1225,6 +1274,11 @@ function setupDataChannel() {
     let data;
     try { data = JSON.parse(raw); } catch { return; }
     if (!data || typeof data !== 'object') return;   // ignore non-object payloads
+    // Accept/decline handshake — only the dialler acts on these, and only msg/
+    // file traffic is processed once we've actually entered the chat.
+    if (data.type === 'accepted') { if (isInitiator) enterChat(); return; }
+    if (data.type === 'declined') { if (isInitiator) onDeclined(); return; }
+    if (isInitiator && !chatEntered) return;   // ignore anything before Accept
     if      (data.type === 'msg')       receiveMessage(data);
     else if (data.type === 'file-meta') receiveFileMeta(data);
     else if (data.type === 'file-done') receiveFileDone(data);
@@ -1254,6 +1308,7 @@ function setupDataChannel() {
 // quietly (negotiation commonly drops when the tab is briefly backgrounded)
 // rather than bouncing them to a confusing lobby.
 function handleNegotiationFail() {
+  if (declinedByPeer) { declinedByPeer = false; return; }   // not a failure — they said no
   if (joinConfirmed && autoConnectId) {
     if (document.hidden) return;            // wait; visibilitychange will retry
     if (connectAttempts < 3) {
@@ -1278,6 +1333,34 @@ function retryInvite() {
   connectToPeer();
 }
 
+// Watch the underlying ICE connection. If it fails, the two devices couldn't
+// form a direct link — almost always the other side's network/browser, not a
+// bug. Turn the silent hang into actionable guidance.
+function monitorIce(c) {
+  const attach = (tries) => {
+    const pc = c && c.peerConnection;
+    if (!pc) { if (tries < 40 && c && !connOpened) setTimeout(() => attach(tries + 1), 250); return; }
+    const check = () => {
+      if (connOpened) return;
+      if (pc.iceConnectionState === 'failed') showConnectTrouble();
+    };
+    pc.addEventListener('iceconnectionstatechange', check);
+    check();
+  };
+  attach(0);
+}
+
+let troubleShown = false;
+function showConnectTrouble() {
+  if (troubleShown || connOpened) return;
+  troubleShown = true;
+  const tip = 'Couldn’t form the connection. The other phone is likely on a restrictive network, or opened the link inside a chat app. Ask them to open the link in Chrome (⋮ → “Open in Chrome”) and use Wi-Fi, then try again.';
+  document.getElementById('status-txt').textContent = 'Connection blocked by network';
+  updateGateStatus('Couldn’t connect. Open this link in Chrome (not inside a chat app) and use Wi-Fi, then tap to retry.', true);
+  showToast('⚠️ Connection blocked — check the note.');
+  if (document.getElementById('app').style.display !== 'none') appendSystem('⚠️ ' + tip);
+}
+
 // Reconstruct a tagged file chunk: [4-byte idLen][id bytes][payload].
 // Defensive against a malformed/hostile buffer (bad length prefix etc.).
 function handleBinary(buf) {
@@ -1299,6 +1382,28 @@ function showApp() {
   document.getElementById('app').style.display   = 'flex';
 }
 
+// Actually enter the chat room. For the dialler this only runs after the other
+// person taps Accept (an 'accepted' handshake message); the acceptor enters
+// the moment they accept. This guarantees nobody sees/uses the chat — or can
+// type into it — before the host has approved them.
+function enterChat() {
+  if (chatEntered) return;
+  chatEntered = true;
+  document.getElementById('connected-peer-id').textContent = conn ? conn.peer : '';
+  showApp();
+  fadeOutInviteGate();
+  appendSystem('Connected ✓');
+}
+
+// The host declined our request.
+function onDeclined() {
+  declinedByPeer = true; connOpened = false; connecting = false;
+  try { if (conn) conn.close(); } catch {}
+  conn = null;
+  document.getElementById('status-txt').textContent = 'They declined the chat';
+  updateGateStatus('They declined the chat. Tap to try again.', true);
+}
+
 // User-initiated full disconnect. Closing conn notifies the peer (their
 // conn.on('close') fires) so both ends return to the lobby.
 function endSession() {
@@ -1312,6 +1417,7 @@ function resetToLobby(note) {
   if (conn) { try { conn.close(); } catch {} conn = null; }
   for (const k in fileChunks) delete fileChunks[k];
   totalBuffered = 0;
+  chatEntered = false; isInitiator = false; connecting = false; connOpened = false;
   document.getElementById('app').style.display   = 'none';
   document.getElementById('lobby').style.display = 'flex';
   document.getElementById('messages').innerHTML  = EMPTY_CHAT_HTML;
@@ -1412,7 +1518,7 @@ function shareId() {
 function sendMessage() {
   const inp  = document.getElementById('msg-input');
   const text = inp.value.trim();
-  if (!text || !conn?.open) return;
+  if (!text || !conn?.open || !chatEntered) return;
   const msg = { type: 'msg', text, ts: Date.now() };
   conn.send(JSON.stringify(msg)); // send as string — matches serialization:'raw'
   appendMessage(text, true, msg.ts);
@@ -1483,7 +1589,7 @@ function waitForDrain() {
 }
 
 async function sendOneFile(file) {
-  if (!conn?.open) return;
+  if (!conn?.open || !chatEntered) return;
   const id      = rand();
   const idBytes = new TextEncoder().encode(id);
   // Send metadata as JSON string
@@ -1728,7 +1834,7 @@ async function startCall(mode) {
 }
 
 async function answerCall() {
-  stopRingtone();
+  stopRingtone(); stopTitleAlert();
   document.getElementById('call-modal').classList.remove('visible');
   if (!pendingCall) return; // caller hung up before we answered
   voiceMode = (pendingMode === 'voice');   // match the caller's chosen mode
@@ -1748,7 +1854,7 @@ async function answerCall() {
 function rejectCall() {
   // Tell the caller so their ringing/calling state ends too.
   if (conn && conn.open) { try { conn.send(JSON.stringify({ type: 'call-end' })); } catch {} }
-  stopRingtone();
+  stopRingtone(); stopTitleAlert();
   document.getElementById('call-modal').classList.remove('visible');
   if (pendingCall) { try { pendingCall.close(); } catch {} pendingCall = null; }
   appendSystem('Call declined');
@@ -1768,7 +1874,7 @@ function hangUp(notify = true) {
   if (notify && conn && conn.open && wasActive) {
     try { conn.send(JSON.stringify({ type: 'call-end' })); } catch {}
   }
-  stopRingtone();
+  stopRingtone(); stopTitleAlert();
   document.getElementById('call-modal').classList.remove('visible');
   if (pendingCall) { try { pendingCall.close(); } catch {} pendingCall = null; }
   if (activeCall)  { try { activeCall.close();  } catch {} activeCall  = null; }
@@ -2060,6 +2166,20 @@ function notifyChime() {
   });
 }
 
+// Flash the browser-tab title so an incoming request/call is noticeable even
+// when you're working in another tab.
+let titleTimer = null;
+const BASE_TITLE = document.title;
+function startTitleAlert(msg) {
+  stopTitleAlert();
+  let on = false;
+  titleTimer = setInterval(() => { document.title = (on = !on) ? msg : BASE_TITLE; }, 1000);
+}
+function stopTitleAlert() {
+  if (titleTimer) { clearInterval(titleTimer); titleTimer = null; }
+  document.title = BASE_TITLE;
+}
+
 function startRingtone() {
   stopRingtone(); // clear any previous
   const ctx = getAudioCtx();
@@ -2192,6 +2312,19 @@ document.querySelectorAll('.lobby-advanced').forEach(d => {
 // Show the speaker/output switch only where the browser can actually route audio.
 if (typeof HTMLMediaElement !== 'undefined' && 'setSinkId' in HTMLMediaElement.prototype) {
   document.getElementById('item-speaker').style.display = '';
+}
+
+// Warn if we're inside an in-app browser (link opened within WhatsApp/Instagram/
+// etc.), where WebRTC is often broken on Android — the usual "I accepted but
+// nothing happened" cause for one specific person.
+function isInAppBrowser() {
+  const ua = navigator.userAgent || '';
+  return /; ?wv\)/.test(ua) ||                                   // Android WebView
+         /(FBAN|FBAV|FB_IAB|Instagram|Line\/|MicroMessenger|Snapchat|Pinterest|Twitter|TikTok|GSA)/i.test(ua);
+}
+if (isInAppBrowser()) {
+  const w = document.getElementById('inapp-warn');
+  if (w) w.classList.add('show');
 }
 
 document.getElementById('footer-year').textContent = new Date().getFullYear();
