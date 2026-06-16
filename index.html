@@ -1086,22 +1086,29 @@ const ICO = {
 };
 
 // ─── PEER INIT ───────────────────────────────────────────────────────────────
+// Your own Metered relay credentials (free tier, 20 GB/month). To rotate them,
+// grab a fresh pair from https://dashboard.metered.ca → TURN Server and edit here.
+const TURN_USER = '53228629950ade5c42b59f75';
+const TURN_PASS = 'PLhfoSxaDzdQQdQD';
+
 const ICE_CONFIG = {
   iceServers: [
-    // STUN — multiple providers for redundancy
-    { urls: 'stun:stun.l.google.com:19302'  },
-    { urls: 'stun:stun1.l.google.com:19302' },
+    // STUN — discover our public address (free, unlimited)
+    { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun.cloudflare.com:3478' },
-    // TURN on port 80 UDP (most permissive)
-    { urls: 'turn:openrelay.metered.ca:80',   username: 'openrelayproject', credential: 'openrelayproject' },
-    // TURN on port 443 TCP — punches through UAE/corporate firewalls (looks like HTTPS)
-    { urls: 'turn:openrelay.metered.ca:443',              username: 'openrelayproject', credential: 'openrelayproject' },
-    { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
-    // Second TURN provider as backup
-    { urls: 'turn:relay.metered.ca:80',   username: 'openrelayproject', credential: 'openrelayproject' },
-    { urls: 'turn:relay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'stun:stun.relay.metered.ca:80' },
+
+    // ── Your dedicated Metered TURN relay (used when a direct path fails) ─────
+    { urls: 'turn:global.relay.metered.ca:80',                 username: TURN_USER, credential: TURN_PASS },
+    { urls: 'turn:global.relay.metered.ca:80?transport=tcp',   username: TURN_USER, credential: TURN_PASS },
+    { urls: 'turn:global.relay.metered.ca:443',                username: TURN_USER, credential: TURN_PASS },
+    // TURN over TLS on 443 — looks like HTTPS, slips through the strictest firewalls.
+    { urls: 'turns:global.relay.metered.ca:443?transport=tcp', username: TURN_USER, credential: TURN_PASS },
+
+    // Shared free relay as a last-ditch fallback.
+    { urls: 'turn:openrelay.metered.ca:443?transport=tcp',     username: 'openrelayproject', credential: 'openrelayproject' },
   ],
-  iceTransportPolicy: 'all', // try direct first, fall back to TURN
+  iceTransportPolicy: 'all', // try a direct path first, fall back to a relay
 };
 
 function initPeer() {
