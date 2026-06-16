@@ -67,7 +67,12 @@
     display: flex; flex-direction: column;
     align-items: center; justify-content: center;
     height: 100%; gap: 20px; padding: 24px;
+    /* App stays fixed (body has no scroll); the lobby pane scrolls internally
+       when its content is taller than the screen (e.g. a panel is expanded). */
+    overflow-y: auto; -webkit-overflow-scrolling: touch;
   }
+  #lobby::-webkit-scrollbar { width: 3px; }
+  #lobby::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
   .brand {
     display: flex; align-items: center; gap: 10px;
     font-size: 1.5rem; font-weight: 700; letter-spacing: -.5px;
@@ -1960,6 +1965,17 @@ function dismissIntro() {
   intro.classList.add('hide');
   setTimeout(() => intro.remove(), 850);
 }
+
+// Lobby disclosures behave like an accordion: opening one closes the others,
+// so the lobby stays compact and rarely needs the internal scroll.
+document.querySelectorAll('.lobby-advanced').forEach(d => {
+  d.addEventListener('toggle', () => {
+    if (!d.open) return;
+    document.querySelectorAll('.lobby-advanced[open]').forEach(o => { if (o !== d) o.open = false; });
+    // keep the just-opened panel in view within the lobby
+    d.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  });
+});
 
 document.getElementById('footer-year').textContent = new Date().getFullYear();
 initIntro();
