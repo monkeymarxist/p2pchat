@@ -1281,25 +1281,31 @@ const ICO = {
 const TURN_USER = '53228629950ade5c42b59f75';
 const TURN_PASS = 'PLhfoSxaDzdQQdQD';
 
+// STUN servers — discover our public address (free, unlimited). These are the
+// ONLY servers used in P2P mode, which makes P2P behave exactly like the
+// original (no-TURN) app: the only path that can win is a direct one.
+const STUN_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun.cloudflare.com:3478' },
+  { urls: 'stun:stun.relay.metered.ca:80' },
+];
+
+// TURN relays — only added in Relay mode (and refreshed by the Cloudflare Worker).
+let TURN_SERVERS = [
+  // ── Your dedicated Metered TURN relay ──────────────────────────────────────
+  { urls: 'turn:global.relay.metered.ca:80',                 username: TURN_USER, credential: TURN_PASS },
+  { urls: 'turn:global.relay.metered.ca:80?transport=tcp',   username: TURN_USER, credential: TURN_PASS },
+  { urls: 'turn:global.relay.metered.ca:443',                username: TURN_USER, credential: TURN_PASS },
+  // TURN over TLS on 443 — looks like HTTPS, slips through the strictest firewalls.
+  { urls: 'turns:global.relay.metered.ca:443?transport=tcp', username: TURN_USER, credential: TURN_PASS },
+  // Shared free relay as a last-ditch fallback.
+  { urls: 'turn:openrelay.metered.ca:443?transport=tcp',     username: 'openrelayproject', credential: 'openrelayproject' },
+];
+
 const ICE_CONFIG = {
-  iceServers: [
-    // STUN — discover our public address (free, unlimited)
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun.cloudflare.com:3478' },
-    { urls: 'stun:stun.relay.metered.ca:80' },
-
-    // ── Your dedicated Metered TURN relay (used when a direct path fails) ─────
-    { urls: 'turn:global.relay.metered.ca:80',                 username: TURN_USER, credential: TURN_PASS },
-    { urls: 'turn:global.relay.metered.ca:80?transport=tcp',   username: TURN_USER, credential: TURN_PASS },
-    { urls: 'turn:global.relay.metered.ca:443',                username: TURN_USER, credential: TURN_PASS },
-    // TURN over TLS on 443 — looks like HTTPS, slips through the strictest firewalls.
-    { urls: 'turns:global.relay.metered.ca:443?transport=tcp', username: TURN_USER, credential: TURN_PASS },
-
-    // Shared free relay as a last-ditch fallback.
-    { urls: 'turn:openrelay.metered.ca:443?transport=tcp',     username: 'openrelayproject', credential: 'openrelayproject' },
-  ],
-  iceTransportPolicy: 'relay', // DEFAULT = Relay (overridden by the mode toggle)
-  iceCandidatePoolSize: 4,     // pre-gather candidates (helps the direct path in P2P mode)
+  iceServers: STUN_SERVERS.slice(),  // rebuilt by applyConnMode() per mode
+  iceTransportPolicy: 'relay',       // DEFAULT = Relay (overridden by the mode toggle)
+  iceCandidatePoolSize: 4,           // pre-gather candidates (helps the direct path in P2P mode)
   bundlePolicy: 'max-bundle',
   rtcpMuxPolicy: 'require',
 };
@@ -1320,7 +1326,8 @@ async function loadTurnCredentials() {
     const ice = data && data.iceServers;
     if (!ice) return;
     const servers = Array.isArray(ice) ? ice : [ice];
-    ICE_CONFIG.iceServers = servers.concat(ICE_CONFIG.iceServers);   // Cloudflare first, rest as fallback
+    TURN_SERVERS = servers.concat(TURN_SERVERS);   // Cloudflare relays first, rest as fallback
+    applyConnMode();                               // rebuild the live list with the new relays
   } catch { /* offline / CORS / timeout → fall back to the static servers */ }
 }
 
@@ -1841,7 +1848,17 @@ function setConnMode(m) {
     : 'Relay mode — applies to your next connection');
 }
 function applyConnMode() {
-  ICE_CONFIG.iceTransportPolicy = (connMode === 'p2p') ? 'all' : 'relay';
+  if (connMode === 'p2p') {
+    // Direct-only: STUN servers ONLY (no relays offered), exactly like the
+    // original no-TURN app. With no relay candidates to nominate, the connection
+    // can only succeed via a direct path.
+    ICE_CONFIG.iceServers = STUN_SERVERS.slice();
+    ICE_CONFIG.iceTransportPolicy = 'all';
+  } else {
+    // Relay: full TURN list, force every flow through a relay (hides IP).
+    ICE_CONFIG.iceServers = TURN_SERVERS.concat(STUN_SERVERS);
+    ICE_CONFIG.iceTransportPolicy = 'relay';
+  }
   const r = document.getElementById('mode-relay');
   const p = document.getElementById('mode-p2p');
   if (r) r.classList.toggle('active', connMode === 'relay');
@@ -2930,7 +2947,7 @@ loadTurnCredentials().finally(() => { initPeer(); checkSecureContext(); });
      Get your token at Cloudflare dashboard → Web Analytics → Add a site, then
      replace YOUR_CLOUDFLARE_TOKEN below. -->
 <script defer src="https://static.cloudflareinsights.com/beacon.min.js"
-        data-cf-beacon='{"token": "f38c9555e1544121bf30af0bc5947ab9"}'</script>
+        data-cf-beacon='{"token": "f38c9555e1544121bf30af0bc5947ab9"}'></script>
 
 </body>
 </html>
