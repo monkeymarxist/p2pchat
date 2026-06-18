@@ -30,11 +30,11 @@
   base-uri 'self';
   object-src 'none';
   form-action 'self';
-  script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net;
+  script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://static.cloudflareinsights.com;
   style-src 'self' 'unsafe-inline';
   img-src 'self' data: blob:;
   media-src 'self' blob: mediastream:;
-  connect-src 'self' https://*.peerjs.com wss://*.peerjs.com;
+  connect-src 'self' https://*.peerjs.com wss://*.peerjs.com https://cloudflareinsights.com https://p2p-turn.arjunresearchspace-265.workers.dev;
 ">
 
 <!-- PeerJS 1.5.4, served from jsDelivr (verbatim npm dist) and pinned with an
@@ -729,7 +729,7 @@
         </span>
         <div><b>You approve.</b> Nobody connects until you tap <i>Accept</i>.</div>
       </div>
-      <div class="hiw-foot">A small directory just helps two browsers find each other. It never sees your chats.</div>
+      <div class="hiw-foot">A small directory just helps two browsers find each other. It never sees your chats. We use privacy-friendly, cookieless analytics that count visits and country only — never your messages, files or calls.</div>
     </div>
   </details>
 
@@ -1135,6 +1135,26 @@ const ICE_CONFIG = {
   ],
   iceTransportPolicy: 'all', // try a direct path first, fall back to a relay
 };
+
+// Our Cloudflare Worker mints short-lived TURN credentials (keeps the API token
+// server-side). Fetch them at startup and put Cloudflare's relays first; if the
+// Worker is slow/unreachable/blocked, we silently keep the static list above.
+const TURN_WORKER_URL = 'https://p2p-turn.arjunresearchspace-265.workers.dev';
+async function loadTurnCredentials() {
+  if (!TURN_WORKER_URL) return;
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 3000);   // never hang startup
+    const res = await fetch(TURN_WORKER_URL, { signal: ctrl.signal });
+    clearTimeout(timer);
+    if (!res.ok) return;
+    const data = await res.json();
+    const ice = data && data.iceServers;
+    if (!ice) return;
+    const servers = Array.isArray(ice) ? ice : [ice];
+    ICE_CONFIG.iceServers = servers.concat(ICE_CONFIG.iceServers);   // Cloudflare first, rest as fallback
+  } catch { /* offline / CORS / timeout → fall back to the static servers */ }
+}
 
 function initPeer() {
   // Try to reuse the same ID from last session (survives tab switch / suspension)
@@ -2382,8 +2402,17 @@ if (autoConnectId) {
 } else {
   initIntro();
 }
-initPeer();
-checkSecureContext();
+// Pull fresh TURN credentials (≤3s, non-blocking on failure), THEN start the
+// peer so the relay is configured from the first connection.
+loadTurnCredentials().finally(() => { initPeer(); checkSecureContext(); });
 </script>
+
+<!-- Cloudflare Web Analytics — privacy-first, cookieless. Counts visits and
+     country only; collects no personal data and never sees chat/call content.
+     Get your token at Cloudflare dashboard → Web Analytics → Add a site, then
+     replace YOUR_CLOUDFLARE_TOKEN below. -->
+<script defer src="https://static.cloudflareinsights.com/beacon.min.js"
+        data-cf-beacon='{"token": "YOUR_CLOUDFLARE_TOKEN"}'></script>
+
 </body>
 </html>
