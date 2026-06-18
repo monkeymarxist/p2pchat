@@ -1677,7 +1677,10 @@ function resetToLobby(note) {
 // sent to any server (better for privacy than a query string), and opening the
 // link auto-connects the visitor to you.
 function inviteLink(id) {
-  return location.origin + location.pathname + '#peer=' + encodeURIComponent(id);
+  // Carry the inviter's connection mode so the other side joins the SAME way.
+  // (Relay is the default, so we only tag the link when P2P is selected.)
+  const mode = (connMode === 'p2p') ? '&m=p2p' : '';
+  return location.origin + location.pathname + '#peer=' + encodeURIComponent(id) + mode;
 }
 
 // Copy ONLY the invite link (no instructions).
@@ -1742,11 +1745,16 @@ function showQR() {
 function closeQR() { document.getElementById('qr-modal').classList.remove('show'); }
 
 // Read a target Peer ID from an invite link (#peer=ID). One-shot per page load.
-let autoConnectId = (() => {
+let autoConnectId = '';
+let inviteMode = '';   // connection mode carried by the invite link, if any
+(() => {
   try {
     const h = (location.hash || '').replace(/^#/, '');
-    return h ? (new URLSearchParams(h).get('peer') || '').trim() : '';
-  } catch { return ''; }
+    if (!h) return;
+    const p = new URLSearchParams(h);
+    autoConnectId = (p.get('peer') || '').trim();
+    if (p.get('m') === 'p2p') inviteMode = 'p2p';
+  } catch {}
 })();
 
 // ── Invite-link entry ────────────────────────────────────────────────────────
@@ -2901,6 +2909,9 @@ if (isInAppBrowser()) {
 document.getElementById('footer-year').textContent = new Date().getFullYear();
 loadNick();   // prefill the saved display name
 loadConnMode(); // restore Relay/P2P choice (default Relay)
+// An invite link can carry the inviter's mode — honour it so both sides match
+// (silently; no toast, since the invitee didn't tap the toggle themselves).
+if (inviteMode === 'p2p') { connMode = 'p2p'; applyConnMode(); }
 // Invite-link openers skip the manifesto intro and get a fast "Join" confirm.
 if (autoConnectId) {
   const intro = document.getElementById('intro');
