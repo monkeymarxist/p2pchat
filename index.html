@@ -158,9 +158,11 @@
     font-weight: 700; color: var(--text3); flex-shrink: 0;
   }
   .id-mini .id-text {
-    flex: 1; font-size: .76rem; line-height: 1.4;
-    white-space: normal; overflow: visible; word-break: break-all;   /* show the full ID */
+    flex: 1; min-width: 0; font-size: .7rem; line-height: 1.4;
+    white-space: nowrap; overflow-x: auto; word-break: normal;        /* full ID, single line */
+    -webkit-overflow-scrolling: touch; scrollbar-width: none;
   }
+  .id-mini .id-text::-webkit-scrollbar { display: none; }
   .lobby-advanced { width: 100%; max-width: 400px; }
   .lobby-advanced summary {
     cursor: pointer; list-style: none; user-select: none;
