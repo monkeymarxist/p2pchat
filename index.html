@@ -301,6 +301,12 @@
     margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);
     font-size: .72rem; font-weight: 700; text-align: center; color: var(--text2);
   }
+  #try-direct {
+    margin-top: 8px; width: 100%; cursor: pointer;
+    background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+    border-radius: var(--radius-sm); padding: 7px; font-size: .72rem; font-weight: 600;
+  }
+  #try-direct:hover { border-color: var(--accent); color: var(--accent); }
   @media (max-width: 640px) {
     .net-label { display: none; }   /* keep just the dot on small screens */
     #stats-panel { right: 8px; }
@@ -965,6 +971,7 @@
       <div class="stat-row" id="st-jit-row"><span>Jitter</span><b id="st-jit">—</b></div>
       <div class="stat-row" id="st-vid-row"><span>Video</span><b id="st-vid">—</b></div>
       <div class="stat-foot" id="st-quality">—</div>
+      <button id="try-direct" onclick="tryDirect()" style="display:none">Try to connect direct</button>
     </div>
 
     <div class="topbar-actions">
@@ -2379,8 +2386,27 @@ function renderStats(s) {
   show('st-jit-row', s.jit != null);   set('st-jit', s.jit != null ? s.jit + ' ms' : '—');
   show('st-vid-row', !!s.res);         set('st-vid', s.res ? s.res + (s.fps != null ? ' · ' + s.fps + ' fps' : '') : '—');
   set('st-quality', ({ good: 'Good', fair: 'Fair', poor: 'Poor' }[s.q]) + ' connection');
+  // The "try direct" option only makes sense while we're on the relay.
+  show('try-direct', !!s.relayed && typeof (activePc() || {}).restartIce === 'function');
   const dot = document.getElementById('net-dot'); if (dot) dot.className = 'net-dot ' + s.q;
   const lbl = document.getElementById('net-label'); if (lbl) lbl.textContent = s.relayed ? 'Relay' : 'P2P';
+}
+
+// Best-effort attempt to upgrade a relayed connection to a direct one by
+// restarting ICE. It re-gathers and re-tests paths; if a direct route is now
+// reachable it switches over. If direct still isn't possible, it stays on the
+// relay (no harm). Not a guarantee — a direct path depends on both networks.
+let lastDirectTry = 0;
+function tryDirect() {
+  const pc = activePc();
+  if (!pc || typeof pc.restartIce !== 'function') { showToast('Can’t re-attempt on this browser'); return; }
+  if (Date.now() - lastDirectTry < 5000) return;     // debounce
+  lastDirectTry = Date.now();
+  try {
+    pc.restartIce();
+    statsPrev = null;
+    showToast('Trying a direct connection…');
+  } catch { showToast('Couldn’t re-attempt the connection'); }
 }
 
 // Attach a stream and explicitly call play() — autoplay is unreliable on iOS
