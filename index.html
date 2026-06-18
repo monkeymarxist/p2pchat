@@ -301,12 +301,16 @@
     margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);
     font-size: .72rem; font-weight: 700; text-align: center; color: var(--text2);
   }
-  #try-direct {
-    margin-top: 8px; width: 100%; cursor: pointer;
-    background: var(--surface2); border: 1px solid var(--border); color: var(--text);
-    border-radius: var(--radius-sm); padding: 7px; font-size: .72rem; font-weight: 600;
+  /* Relay/P2P mode toggle (segmented control) */
+  .mode-row { display: flex; align-items: center; gap: 10px; margin-top: 2px; }
+  .mode-label { font-size: .62rem; text-transform: uppercase; letter-spacing: .1em; font-weight: 700; color: var(--text3); flex-shrink: 0; }
+  .seg { display: flex; flex: 1; background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 2px; }
+  .seg-btn {
+    flex: 1; cursor: pointer; border: none; background: transparent; color: var(--text2);
+    font-size: .76rem; font-weight: 600; padding: 6px; border-radius: 6px; transition: background .15s, color .15s;
   }
-  #try-direct:hover { border-color: var(--accent); color: var(--accent); }
+  .seg-btn.active { background: var(--accent); color: #fff; }
+  .mode-hint { font-size: .68rem; color: var(--text3); line-height: 1.45; margin-top: -4px; }
   @media (max-width: 640px) {
     .net-label { display: none; }   /* keep just the dot on small screens */
     #stats-panel { right: 8px; }
@@ -811,6 +815,16 @@
         </svg>
       </button>
     </div>
+
+    <!-- Connection mode: Relay (default) routes via the server; P2P goes direct. -->
+    <div class="mode-row">
+      <span class="mode-label">Mode</span>
+      <div class="seg" id="mode-seg" role="group" aria-label="Connection mode">
+        <button class="seg-btn active" id="mode-relay" onclick="setConnMode('relay')">Relay</button>
+        <button class="seg-btn" id="mode-p2p" onclick="setConnMode('p2p')">P2P</button>
+      </div>
+    </div>
+    <div class="mode-hint">Relay routes through the server (hides your IP, most reliable). P2P connects directly (faster, reveals your IP to the peer). Applies to your next connection.</div>
   </div>
 
   <!-- Trust / reassurance -->
@@ -971,7 +985,6 @@
       <div class="stat-row" id="st-jit-row"><span>Jitter</span><b id="st-jit">—</b></div>
       <div class="stat-row" id="st-vid-row"><span>Video</span><b id="st-vid">—</b></div>
       <div class="stat-foot" id="st-quality">—</div>
-      <button id="try-direct" onclick="tryDirect()" style="display:none">Try to connect direct</button>
     </div>
 
     <div class="topbar-actions">
@@ -1285,9 +1298,8 @@ const ICE_CONFIG = {
     // Shared free relay as a last-ditch fallback.
     { urls: 'turn:openrelay.metered.ca:443?transport=tcp',     username: 'openrelayproject', credential: 'openrelayproject' },
   ],
-  iceTransportPolicy: 'all', // try a direct path first, fall back to a relay
-  iceCandidatePoolSize: 4,   // pre-gather candidates so the direct path is ready
-                             // sooner and is more likely to win over the relay
+  iceTransportPolicy: 'relay', // DEFAULT = Relay (overridden by the mode toggle)
+  iceCandidatePoolSize: 4,     // pre-gather candidates (helps the direct path in P2P mode)
   bundlePolicy: 'max-bundle',
   rtcpMuxPolicy: 'require',
 };
@@ -1802,6 +1814,30 @@ function saveNick() {
 function applyPeerName() {
   const el = document.getElementById('peer-name');
   if (el) el.textContent = peerName || 'Connected';
+}
+
+// ─── CONNECTION MODE (Relay vs P2P) ──────────────────────────────────────────
+// Relay forces all traffic through the TURN server (hides IP, most reliable).
+// P2P allows a direct path (faster, but reveals your IP to the peer). Default: Relay.
+let connMode = 'relay';
+function loadConnMode() {
+  try { if (localStorage.getItem('p2p_mode') === 'p2p') connMode = 'p2p'; } catch {}
+  applyConnMode();
+}
+function setConnMode(m) {
+  connMode = (m === 'p2p') ? 'p2p' : 'relay';
+  try { localStorage.setItem('p2p_mode', connMode); } catch {}
+  applyConnMode();
+  showToast(connMode === 'p2p'
+    ? 'Direct (P2P) mode — applies to your next connection'
+    : 'Relay mode — applies to your next connection');
+}
+function applyConnMode() {
+  ICE_CONFIG.iceTransportPolicy = (connMode === 'p2p') ? 'all' : 'relay';
+  const r = document.getElementById('mode-relay');
+  const p = document.getElementById('mode-p2p');
+  if (r) r.classList.toggle('active', connMode === 'relay');
+  if (p) p.classList.toggle('active', connMode === 'p2p');
 }
 
 function sendMessage() {
@@ -2386,27 +2422,8 @@ function renderStats(s) {
   show('st-jit-row', s.jit != null);   set('st-jit', s.jit != null ? s.jit + ' ms' : '—');
   show('st-vid-row', !!s.res);         set('st-vid', s.res ? s.res + (s.fps != null ? ' · ' + s.fps + ' fps' : '') : '—');
   set('st-quality', ({ good: 'Good', fair: 'Fair', poor: 'Poor' }[s.q]) + ' connection');
-  // The "try direct" option only makes sense while we're on the relay.
-  show('try-direct', !!s.relayed && typeof (activePc() || {}).restartIce === 'function');
   const dot = document.getElementById('net-dot'); if (dot) dot.className = 'net-dot ' + s.q;
   const lbl = document.getElementById('net-label'); if (lbl) lbl.textContent = s.relayed ? 'Relay' : 'P2P';
-}
-
-// Best-effort attempt to upgrade a relayed connection to a direct one by
-// restarting ICE. It re-gathers and re-tests paths; if a direct route is now
-// reachable it switches over. If direct still isn't possible, it stays on the
-// relay (no harm). Not a guarantee — a direct path depends on both networks.
-let lastDirectTry = 0;
-function tryDirect() {
-  const pc = activePc();
-  if (!pc || typeof pc.restartIce !== 'function') { showToast('Can’t re-attempt on this browser'); return; }
-  if (Date.now() - lastDirectTry < 5000) return;     // debounce
-  lastDirectTry = Date.now();
-  try {
-    pc.restartIce();
-    statsPrev = null;
-    showToast('Trying a direct connection…');
-  } catch { showToast('Couldn’t re-attempt the connection'); }
 }
 
 // Attach a stream and explicitly call play() — autoplay is unreliable on iOS
@@ -2883,6 +2900,7 @@ if (isInAppBrowser()) {
 
 document.getElementById('footer-year').textContent = new Date().getFullYear();
 loadNick();   // prefill the saved display name
+loadConnMode(); // restore Relay/P2P choice (default Relay)
 // Invite-link openers skip the manifesto intro and get a fast "Join" confirm.
 if (autoConnectId) {
   const intro = document.getElementById('intro');
