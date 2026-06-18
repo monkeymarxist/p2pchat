@@ -243,7 +243,37 @@
     display: flex; align-items: center; gap: 12px;
     padding: 10px 16px;
     background: var(--surface); border-bottom: 1px solid var(--border);
-    flex-shrink: 0;
+    flex-shrink: 0; position: relative;
+  }
+
+  /* live connection-quality chip + stats popover */
+  .net-stat {
+    display: flex; align-items: center; gap: 6px; cursor: pointer;
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 20px; padding: 5px 10px; color: var(--text2);
+    font-size: .72rem; font-weight: 600; flex-shrink: 0;
+  }
+  .net-stat:hover { color: var(--text); }
+  .net-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text3); flex-shrink: 0; }
+  .net-dot.good { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .net-dot.fair { background: var(--amber); box-shadow: 0 0 6px var(--amber); }
+  .net-dot.poor { background: var(--red);   box-shadow: 0 0 6px var(--red); }
+  #stats-panel {
+    display: none; position: absolute; top: calc(100% + 6px); right: 12px; z-index: 40;
+    width: 230px; background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 10px 12px;
+    box-shadow: 0 8px 28px rgba(0,0,0,.45);
+  }
+  #stats-panel.show { display: block; }
+  .stat-row { display: flex; justify-content: space-between; gap: 10px; font-size: .76rem; padding: 4px 0; color: var(--text2); }
+  .stat-row b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .stat-foot {
+    margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);
+    font-size: .72rem; font-weight: 700; text-align: center; color: var(--text2);
+  }
+  @media (max-width: 640px) {
+    .net-label { display: none; }   /* keep just the dot on small screens */
+    #stats-panel { right: 8px; }
   }
   .avatar {
     width: 34px; height: 34px; border-radius: 50%;
@@ -839,6 +869,22 @@
       <div class="peer-name">Connected</div>
       <div class="peer-sub" id="connected-peer-id"></div>
     </div>
+
+    <!-- live connection quality — click to expand full stats -->
+    <button class="net-stat" id="net-stat" title="Connection details" aria-label="Connection quality" onclick="toggleStats()">
+      <span class="net-dot" id="net-dot"></span>
+      <span class="net-label" id="net-label">…</span>
+    </button>
+    <div id="stats-panel">
+      <div class="stat-row"><span>Link</span><b id="st-type">—</b></div>
+      <div class="stat-row"><span>Ping</span><b id="st-rtt">—</b></div>
+      <div class="stat-row"><span>Throughput</span><b id="st-bw">—</b></div>
+      <div class="stat-row" id="st-loss-row"><span>Packet loss</span><b id="st-loss">—</b></div>
+      <div class="stat-row" id="st-jit-row"><span>Jitter</span><b id="st-jit">—</b></div>
+      <div class="stat-row" id="st-vid-row"><span>Video</span><b id="st-vid">—</b></div>
+      <div class="stat-foot" id="st-quality">—</div>
+    </div>
+
     <div class="topbar-actions">
       <!-- voice call (idle) -->
       <button class="action-btn active-accent" id="btn-call-voice" title="Voice call" onclick="startCall('voice')">
@@ -1454,6 +1500,7 @@ function enterChat() {
   showApp();
   fadeOutInviteGate();
   appendSystem('Connected ✓');
+  startStats();   // begin live connection-quality readout
 }
 
 // The host declined our request.
@@ -1477,6 +1524,7 @@ function endSession() {
 // Tear everything down and go back to the lobby (reusable for a fresh session).
 function resetToLobby(note) {
   tearingDown = true;
+  stopStats();
   if (conn) { try { conn.close(); } catch {} conn = null; }
   for (const k in fileChunks) delete fileChunks[k];
   totalBuffered = 0;
@@ -1968,6 +2016,99 @@ function updateCallView() {
   if (activeCall && !showVideo) document.getElementById('voice-peer').textContent = conn ? conn.peer : '';
 }
 
+// ─── LIVE CONNECTION STATS ───────────────────────────────────────────────────
+// Polls WebRTC getStats() once a second on the active connection (the call's
+// peer connection if in a call, else the chat data connection). All local —
+// nothing leaves the device.
+let statsTimer = null, statsPrev = null, statsPcRef = null;
+
+function startStats() { stopStats(); statsTimer = setInterval(pollStats, 1000); pollStats(); }
+function stopStats() {
+  clearInterval(statsTimer); statsTimer = null; statsPrev = null; statsPcRef = null;
+  const dot = document.getElementById('net-dot'); if (dot) dot.className = 'net-dot';
+  const lbl = document.getElementById('net-label'); if (lbl) lbl.textContent = '…';
+  const p = document.getElementById('stats-panel'); if (p) p.classList.remove('show');
+}
+function toggleStats() {
+  const p = document.getElementById('stats-panel'); if (p) p.classList.toggle('show');
+}
+function activePc() {
+  return (activeCall && activeCall.peerConnection) || (conn && conn.peerConnection) || null;
+}
+
+async function pollStats() {
+  const pc = activePc();
+  if (!pc || typeof pc.getStats !== 'function') return;
+  if (pc !== statsPcRef) { statsPcRef = pc; statsPrev = null; }   // reset deltas when the pc changes
+  let report; try { report = await pc.getStats(); } catch { return; }
+
+  // Find the active candidate pair (cross-browser).
+  let pair = null, transport = null;
+  report.forEach(s => { if (s.type === 'transport') transport = s; });
+  if (transport && transport.selectedCandidatePairId) pair = report.get(transport.selectedCandidatePairId);
+  if (!pair) report.forEach(s => {
+    if (s.type === 'candidate-pair' && (s.selected || (s.nominated && s.state === 'succeeded'))) {
+      if (!pair || s.selected) pair = s;
+    }
+  });
+  if (!pair) report.forEach(s => {
+    if (s.type === 'candidate-pair' && s.state === 'succeeded' &&
+        (!pair || (s.bytesSent || 0) > (pair.bytesSent || 0))) pair = s;
+  });
+  if (!pair) return;
+
+  const local  = report.get(pair.localCandidateId);
+  const remote = report.get(pair.remoteCandidateId);
+  const relayed = (local && local.candidateType === 'relay') || (remote && remote.candidateType === 'relay');
+  const proto = ((local && (local.relayProtocol || local.protocol)) || pair.protocol || '').toUpperCase();
+  const rtt = (pair.currentRoundTripTime != null) ? Math.round(pair.currentRoundTripTime * 1000) : null;
+
+  // throughput from byte deltas
+  const now = pair.timestamp || performance.now();
+  const sent = pair.bytesSent || 0, recv = pair.bytesReceived || 0;
+  let up = null, down = null;
+  if (statsPrev && now > statsPrev.now) {
+    const dt = (now - statsPrev.now) / 1000;
+    up   = Math.max(0, Math.round((sent - statsPrev.sent) * 8 / 1000 / dt));
+    down = Math.max(0, Math.round((recv - statsPrev.recv) * 8 / 1000 / dt));
+  }
+  statsPrev = { now, sent, recv };
+
+  // media metrics (present only during a call)
+  let loss = null, jit = null, fps = null, res = null;
+  report.forEach(s => {
+    if (s.type === 'inbound-rtp') {
+      if (s.jitter != null) jit = Math.round(s.jitter * 1000);
+      if (s.packetsLost != null && s.packetsReceived != null) {
+        const tot = s.packetsLost + s.packetsReceived;
+        if (tot > 0) loss = +(100 * s.packetsLost / tot).toFixed(1);
+      }
+      if (s.framesPerSecond != null) fps = Math.round(s.framesPerSecond);
+      if (s.frameWidth && s.frameHeight) res = s.frameWidth + '×' + s.frameHeight;
+    }
+  });
+
+  let q = 'good';
+  if ((rtt != null && rtt > 300) || (loss != null && loss > 5) || (relayed && proto === 'TCP')) q = 'poor';
+  else if ((rtt != null && rtt > 150) || (loss != null && loss > 2) || (jit != null && jit > 30)) q = 'fair';
+
+  renderStats({ relayed, proto, rtt, up, down, loss, jit, fps, res, q });
+}
+
+function renderStats(s) {
+  const set  = (id, v)  => { const e = document.getElementById(id); if (e) e.textContent = v; };
+  const show = (id, on) => { const e = document.getElementById(id); if (e) e.style.display = on ? '' : 'none'; };
+  set('st-type', (s.relayed ? 'Relay' : 'P2P') + (s.proto ? ' · ' + s.proto : ''));
+  set('st-rtt', s.rtt != null ? s.rtt + ' ms' : '—');
+  set('st-bw',  s.down != null ? '↓ ' + s.down + '  ↑ ' + s.up + ' kbps' : '—');
+  show('st-loss-row', s.loss != null); set('st-loss', s.loss != null ? s.loss + ' %' : '—');
+  show('st-jit-row', s.jit != null);   set('st-jit', s.jit != null ? s.jit + ' ms' : '—');
+  show('st-vid-row', !!s.res);         set('st-vid', s.res ? s.res + (s.fps != null ? ' · ' + s.fps + ' fps' : '') : '—');
+  set('st-quality', ({ good: 'Good', fair: 'Fair', poor: 'Poor' }[s.q]) + ' connection');
+  const dot = document.getElementById('net-dot'); if (dot) dot.className = 'net-dot ' + s.q;
+  const lbl = document.getElementById('net-label'); if (lbl) lbl.textContent = s.relayed ? 'Relay' : 'P2P';
+}
+
 // Attach a stream and explicitly call play() — autoplay is unreliable on iOS
 // Safari and some mobile browsers even with the autoplay attribute.
 function playInVideo(id, stream) {
@@ -2412,7 +2553,7 @@ loadTurnCredentials().finally(() => { initPeer(); checkSecureContext(); });
      Get your token at Cloudflare dashboard → Web Analytics → Add a site, then
      replace YOUR_CLOUDFLARE_TOKEN below. -->
 <script defer src="https://static.cloudflareinsights.com/beacon.min.js"
-        data-cf-beacon='{"token": "YOUR_CLOUDFLARE_TOKEN"}'></script>
+        data-cf-beacon='{"token": "f38c9555e1544121bf30af0bc5947ab9"}'</script>
 
 </body>
 </html>
