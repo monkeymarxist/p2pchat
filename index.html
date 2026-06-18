@@ -158,8 +158,8 @@
     font-weight: 700; color: var(--text3); flex-shrink: 0;
   }
   .id-mini .id-text {
-    flex: 1; font-size: .76rem; white-space: nowrap; overflow: hidden;
-    text-overflow: ellipsis; word-break: normal;
+    flex: 1; font-size: .76rem; line-height: 1.4;
+    white-space: normal; overflow: visible; word-break: break-all;   /* show the full ID */
   }
   .lobby-advanced { width: 100%; max-width: 400px; }
   .lobby-advanced summary {
@@ -765,14 +765,19 @@
 
     <input id="nick-input" type="text" maxlength="24" placeholder="Your name (optional)" aria-label="Your display name" oninput="saveNick()" />
 
-    <!-- One-click invite: builds a link with your ID; opening it auto-connects. -->
+    <!-- Three ways to invite: copy just the link, share link + instructions, or a QR. -->
     <div class="invite-row">
-      <button class="btn btn-primary" id="invite-btn" onclick="shareLink()" disabled aria-label="Copy your invite link" style="flex:1">
+      <button class="btn btn-primary" id="copy-btn" onclick="copyLink()" disabled aria-label="Copy invite link" style="flex:1">
         <svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
-          <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
         </svg>
         Copy invite link
+      </button>
+      <button class="btn btn-icon-lg" id="share-btn" onclick="shareLink()" disabled title="Share link with instructions" aria-label="Share invite link with instructions">
+        <svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+          <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+        </svg>
       </button>
       <button class="btn btn-icon-lg" id="qr-btn" onclick="showQR()" disabled title="Show QR code" aria-label="Show invite QR code">
         <svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1311,7 +1316,8 @@ function initPeer() {
     document.getElementById('status-dot').classList.add('online');
     document.getElementById('status-txt').textContent = 'Ready — share your invite link';
     document.getElementById('connect-btn').disabled = false;
-    document.getElementById('invite-btn').disabled  = false;
+    document.getElementById('copy-btn').disabled    = false;
+    document.getElementById('share-btn').disabled   = false;
     document.getElementById('qr-btn').disabled       = false;
     retryInvite();        // if opened via an invite link and the user tapped Join, connect
   });
@@ -1653,6 +1659,15 @@ function inviteLink(id) {
   return location.origin + location.pathname + '#peer=' + encodeURIComponent(id);
 }
 
+// Copy ONLY the invite link (no instructions).
+async function copyLink() {
+  const id = peer && peer.id;
+  if (!id) { showToast('Still connecting — try again in a moment'); return; }
+  const url = inviteLink(id);
+  try { await navigator.clipboard.writeText(url); showToast('Link copied'); setWaiting(); }
+  catch { showToast('Could not copy. Link: ' + url); }
+}
+
 async function shareLink() {
   const id = peer && peer.id;
   if (!id) { showToast('Still connecting — try again in a moment'); return; }
@@ -1746,18 +1761,16 @@ function fadeOutInviteGate() {
   setTimeout(() => g.remove(), 600);
 }
 
+// Share/copy ONLY the raw Peer ID (no link, no instructions).
 function shareId() {
-  const id = document.getElementById('my-id').textContent;
-  // Use native share sheet on mobile (opens WhatsApp, Messages, etc. directly)
+  const id = (peer && peer.id) || document.getElementById('my-id').textContent;
+  if (!id || id === '…') { showToast('Still connecting…'); return; }
   if (navigator.share) {
-    navigator.share({
-      title: 'P2P Chat — connect with me',
-      text: 'Open this link and enter my Peer ID to chat:\n\nID: ' + id + '\n\n' + location.href,
-    }).catch(() => {}); // user cancelled — no error needed
+    navigator.share({ title: 'My P2PChat ID', text: id }).catch(() => {});
   } else {
-    // Desktop fallback: copy to clipboard
     navigator.clipboard.writeText(id)
-      .then(() => showToast('ID copied to clipboard'));
+      .then(() => showToast('ID copied'))
+      .catch(() => showToast('ID: ' + id));
   }
 }
 
