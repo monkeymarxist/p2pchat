@@ -376,6 +376,29 @@
     border-radius: 8px; border: 2px solid var(--accent); background: #111; z-index: 2;
   }
 
+  /* ─── GROUP CALL VIDEO GRID ─────────────────────────────────────────────── */
+  #call-grid {
+    flex: 1 1 0; min-height: 0; min-width: 0; width: 100%; height: 100%;
+    display: grid; gap: 6px; padding: 6px; align-content: stretch;
+    grid-template-columns: 1fr;            /* overridden per participant count */
+    box-sizing: border-box; padding-bottom: 84px;  /* leave room for the call bar */
+  }
+  .video-tile {
+    position: relative; background: #0a0a0a; border-radius: 10px;
+    overflow: hidden; min-height: 0; min-width: 0;
+  }
+  .video-tile video {
+    width: 100%; height: 100%; object-fit: cover; display: block; background: #111;
+  }
+  .video-tile.local video { transform: scaleX(-1); }   /* mirror your own preview */
+  .tile-name {
+    position: absolute; bottom: 6px; left: 6px; z-index: 2;
+    font-size: .66rem; color: #fff; background: rgba(0,0,0,.55);
+    padding: 2px 7px; border-radius: 6px; backdrop-filter: blur(4px);
+    max-width: 80%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .tile-muted { position: absolute; top: 6px; right: 6px; z-index: 2; font-size: .8rem; opacity: .9; }
+
   /* Voice-call view: hide the video, show an avatar + label instead. */
   .voice-overlay {
     position: absolute; inset: 0; display: none;
@@ -1017,23 +1040,10 @@
   <!-- body -->
   <div class="app-body">
 
-    <!-- video panel -->
+    <!-- video panel: a tile grid (one tile per participant, incl. you) -->
     <div id="video-panel">
-      <span class="video-label">Remote</span>
       <span class="call-timer" id="call-timer" style="display:none"></span>
-      <video id="remote-video" autoplay playsinline></video>
-      <video id="local-video"  autoplay playsinline muted></video>
-
-      <!-- shown instead of video during a voice call -->
-      <div id="voice-overlay" class="voice-overlay">
-        <div class="voice-ava">
-          <svg class="icon" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M13.832 16.568a1 1 0 0 0 1.213-.303l.355-.465A2 2 0 0 1 17 15h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2A18 18 0 0 1 2 4a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v3a2 2 0 0 1-.8 1.6l-.468.351a1 1 0 0 0-.292 1.233 14 14 0 0 0 6.392 6.384"/>
-          </svg>
-        </div>
-        <div class="voice-title">Voice call</div>
-        <div class="voice-sub" id="voice-peer"></div>
-      </div>
+      <div id="call-grid"></div>
 
       <!-- floating call controls (each has a label under it) -->
       <div class="call-bar">
@@ -2526,46 +2536,59 @@ function initVideoState() {
   if (camOn) detectCameras();   // figure out whether to show the flip button
 }
 
-// ─── GROUP VOICE CALLS (mesh audio) ──────────────────────────────────────────
-// Everyone in the call opens a direct audio connection to every other person in
-// the call (full mesh). Video is deliberately NOT wired yet — it comes once voice
-// is fully tested. The peer with the smaller id places each call to avoid doubles.
-let inCall = false;          // am I currently in the group voice call
+// ─── GROUP CALLS (mesh audio + video) ────────────────────────────────────────
+// Everyone in the call holds a direct audio+video link to every other person
+// (full mesh). Each call stream always carries a video lane — a real camera, a
+// shared screen, or a "Camera off" placeholder — so camera/screen can be toggled
+// mid-call without renegotiation. The smaller peer id places each call so a pair
+// connects exactly once.
+let inCall = false;          // am I currently in the call
 let callRinging = false;     // is the incoming-call prompt showing
 const callPeers = new Set(); // ids of members currently IN the call (not me)
-const calls     = new Map(); // peerId -> { mc, audioEl }
+const calls     = new Map(); // peerId -> { mc, videoEl, tileEl }
 
-async function getMicStream() {
+// Acquire mic (+ camera if wanted) and GUARANTEE a video lane (placeholder if no
+// real camera), so the lane exists for later replaceTrack upgrades.
+async function getCallStream(wantVideo) {
+  cameraStatus = '';
   if (!mediaSupported()) {
     appendSystem('⚠️ ' + (window.isSecureContext
-      ? 'This browser does not expose microphone access.'
-      : 'Mic blocked — open this page over https:// or localhost, not as a file://.'));
-    return new MediaStream();
+      ? 'This browser does not expose camera/mic access.'
+      : 'Camera/mic blocked — open over https:// or localhost, not as a file://.'));
+    return ensureVideoTrack(new MediaStream());
   }
-  try { return await navigator.mediaDevices.getUserMedia({ audio: true, video: false }); }
-  catch (e) { appendSystem('⚠️ ' + explainMediaError(e)); return new MediaStream(); }
+  try {
+    const s = await navigator.mediaDevices.getUserMedia({ audio: true, video: !!wantVideo });
+    cameraStatus = wantVideo ? 'camera + mic' : 'mic only';
+    return ensureVideoTrack(s);
+  } catch (e) {
+    appendSystem('⚠️ ' + explainMediaError(e));
+    try { const a = await navigator.mediaDevices.getUserMedia({ audio: true, video: false }); cameraStatus = 'mic only'; return ensureVideoTrack(a); }
+    catch { return ensureVideoTrack(new MediaStream()); }
+  }
 }
 
-// Start (or be the first into) the group voice call.
+// Start (or be the first into) the call. mode 'video' = camera on, else off.
 async function startCall(mode) {
-  if (mode === 'video') { showToast('Video calls are coming soon — voice is ready now'); return; }
   if (inCall) { showToast('You’re already in the call'); return; }
   if (!anyOpen()) { showToast('Not connected to anyone yet'); return; }
-  localStream = await getMicStream();
+  localStream = await getCallStream(mode === 'video');
+  initVideoState();
   enterCall();
   setCallPill(callPeers.size ? 'Connecting…' : 'Waiting for others…');
   if (!callPeers.size) startRingback();          // alone so far → soft ringback
-  appendSystem('You started a voice call');
+  appendSystem('You started a ' + (mode === 'video' ? 'video' : 'voice') + ' call — ' + cameraStatus);
 }
 
-// Answer the "incoming group call" prompt → join the call.
+// Answer the "incoming call" prompt → join (camera off; turn it on in-call).
 async function answerCall() {
   stopRingtone(); stopTitleAlert(); callRinging = false;
   document.getElementById('call-modal').classList.remove('visible');
   if (inCall) return;
-  localStream = await getMicStream();
+  localStream = await getCallStream(false);
+  initVideoState();
   enterCall();
-  appendSystem('You joined the voice call');
+  appendSystem('You joined the call — ' + cameraStatus);
 }
 
 // Dismiss the incoming-call prompt without joining.
@@ -2574,54 +2597,49 @@ function rejectCall() {
   document.getElementById('call-modal').classList.remove('visible');
 }
 
-// Shared join logic: announce we're in, then connect to everyone already in.
+// Shared join logic: build our grid, announce we're in, connect to everyone.
 function enterCall() {
   inCall = true; muted = false;
   showCallUI(true);
-  updateCallView();
+  buildGrid();
   broadcast({ type: 'call-start' });
   [...callPeers].forEach(maybeConnectCall);
 }
 
-// Open an audio link to a peer if we both belong in the call. The smaller id
-// dials; the other waits to receive it — so each pair connects exactly once.
+// Open a call to a peer if we both belong in it. Smaller id dials; the other
+// waits to receive — so each pair connects exactly once.
 function maybeConnectCall(peerId) {
   if (!inCall || calls.has(peerId) || !callPeers.has(peerId)) return;
   const rec = peers.get(peerId);
   if (!rec || !rec.conn.open) return;
   if (peer.id < peerId) {
-    const mc = peer.call(peerId, localStream, { metadata: { group: true, mode: 'voice' } });
+    const mc = peer.call(peerId, localStream, { metadata: { group: true } });
     setupGroupCall(mc, peerId);
   }
 }
 
 function setupGroupCall(mc, peerId) {
-  calls.set(peerId, { mc, audioEl: null });
-  mc.on('stream', s => attachCallAudio(peerId, s));
+  calls.set(peerId, { mc, videoEl: null, tileEl: null });
+  addTile(peerId);
+  mc.on('stream', s => attachCallMedia(peerId, s));
   mc.on('close',  () => dropCall(peerId));
   mc.on('error',  () => dropCall(peerId));
   startCallTimer();            // stops ringback, shows the running timer
   updateCallView();
 }
 
-// Play a peer's incoming audio through a hidden <audio> element.
-function attachCallAudio(peerId, stream) {
-  const c = calls.get(peerId); if (!c) return;
-  if (!c.audioEl) {
-    const a = document.createElement('audio');
-    a.autoplay = true; a.setAttribute('playsinline', '');
-    document.getElementById('call-audio').appendChild(a);
-    c.audioEl = a;
-  }
-  c.audioEl.srcObject = stream;
-  const p = c.audioEl.play(); if (p && p.catch) p.catch(() => {});
-  updateCallView();
+// One <video> element plays the peer's audio AND video.
+function attachCallMedia(peerId, stream) {
+  const c = calls.get(peerId); if (!c || !c.videoEl) return;
+  c.videoEl.srcObject = stream;
+  const p = c.videoEl.play(); if (p && p.catch) p.catch(() => {});
 }
 
 function dropCall(peerId) {
   const c = calls.get(peerId); if (!c) return;
   try { c.mc.close(); } catch {}
-  if (c.audioEl) { c.audioEl.srcObject = null; c.audioEl.remove(); }
+  if (c.videoEl) c.videoEl.srcObject = null;
+  if (c.tileEl)  c.tileEl.remove();
   calls.delete(peerId);
   updateCallView();
 }
@@ -2631,15 +2649,20 @@ function hangUp(notify = true) {
   const was = inCall || !!localStream;
   if (notify && inCall && anyOpen()) broadcast({ type: 'call-leave' });
   inCall = false; callRinging = false;
-  calls.forEach(c => { try { c.mc.close(); } catch {} if (c.audioEl) { c.audioEl.srcObject = null; c.audioEl.remove(); } });
+  calls.forEach(c => { try { c.mc.close(); } catch {} if (c.videoEl) c.videoEl.srcObject = null; if (c.tileEl) c.tileEl.remove(); });
   calls.clear();
-  if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
+  if (screenStream) { screenStream.getTracks().forEach(t => t.stop()); screenStream = null; }
+  if (camTrack)     { camTrack.stop(); camTrack = null; }
+  if (localStream)  { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
+  clearInterval(blankTimer); blankTimer = null; blankTrack = null;
+  sharing = false; camOn = false; videoActive = false;
+  facingMode = 'user'; hasMultiCam = false;
   stopRingtone(); stopTitleAlert(); stopRingback(); stopCallTimer();
   document.getElementById('call-modal').classList.remove('visible');
   pendingCall = null; muted = false;
+  const grid = document.getElementById('call-grid'); if (grid) grid.innerHTML = '';
   showCallUI(false);
   if (was) appendSystem('You left the call');
-  updateCallView();
 }
 
 // A member announced they're in the call.
@@ -2668,18 +2691,55 @@ function onCallLeave(rec) {
   updateCallView();
 }
 
-function signalMedia() { /* no-op until video calls are wired back in */ }
+function signalMedia() { /* video shows via the live placeholder track; no separate signal needed */ }
 
-// Reflect call state in the audio-only overlay (no video tiles yet).
+// ── Video grid ──
+// Build the grid from scratch: a local-preview tile plus a tile per connected
+// peer. Called when we enter the call.
+function buildGrid() {
+  const grid = document.getElementById('call-grid');
+  if (!grid) return;
+  grid.innerHTML = '';
+  const tile = el('div', 'video-tile local');
+  const v = document.createElement('video');
+  v.autoplay = true; v.muted = true; v.id = 'local-video'; v.setAttribute('playsinline', '');
+  const name = el('div', 'tile-name'); name.textContent = displayName() + ' (you)';
+  tile.append(v, name);
+  grid.appendChild(tile);
+  showLocalPreview();
+  calls.forEach((c, id) => addTile(id));
+  updateCallView();
+}
+
+// Add a tile for one remote peer (and attach their stream if it's already here).
+function addTile(peerId) {
+  const grid = document.getElementById('call-grid'); if (!grid) return;
+  const c = calls.get(peerId); if (!c || c.tileEl) return;
+  const tile = el('div', 'video-tile');
+  const v = document.createElement('video');
+  v.autoplay = true; v.setAttribute('playsinline', '');
+  const name = el('div', 'tile-name'); name.textContent = nameOf(peers.get(peerId));
+  tile.append(v, name);
+  grid.appendChild(tile);
+  c.videoEl = v; c.tileEl = tile;
+  if (c.mc && c.mc.remoteStream) attachCallMedia(peerId, c.mc.remoteStream);
+  updateCallView();
+}
+
+function showLocalPreview() {
+  const v = document.getElementById('local-video');
+  if (v && localStream) { v.srcObject = localStream; const p = v.play(); if (p && p.catch) p.catch(() => {}); }
+}
+
+// Lay out the grid (1 column solo, 2 columns otherwise) and refresh name labels.
 function updateCallView() {
-  document.getElementById('app').classList.toggle('voice-mode', inCall);
-  if (inCall) {
-    const names = [...calls.keys()].map(id => nameOf(peers.get(id)));
-    const el = document.getElementById('voice-peer');
-    if (el) el.textContent = names.length ? names.join(', ') : 'Waiting for others…';
-    const title = document.querySelector('#voice-overlay .voice-title');
-    if (title) title.textContent = (calls.size > 1) ? ('Group voice · ' + (calls.size + 1)) : 'Voice call';
-  }
+  const grid = document.getElementById('call-grid');
+  if (!grid) return;
+  const n = calls.size + 1;                       // include me
+  grid.style.gridTemplateColumns = (n <= 1) ? '1fr' : '1fr 1fr';
+  calls.forEach((c, id) => {
+    if (c.tileEl) { const lbl = c.tileEl.querySelector('.tile-name'); if (lbl) lbl.textContent = nameOf(peers.get(id)); }
+  });
 }
 
 // ─── LIVE CONNECTION STATS ───────────────────────────────────────────────────
@@ -2797,15 +2857,15 @@ function showCallUI(active) {
   const idleDisplay = active ? 'none' : 'flex';
   document.getElementById('btn-call-video').style.display = idleDisplay;
   document.getElementById('btn-call-voice').style.display = idleDisplay;
-  // Voice-only phase: hide the video/screen controls (camera comes back with video).
-  const hide = el => { const it = el && el.closest('.cb-item'); if (it) it.style.display = 'none'; };
-  hide(document.getElementById('btn-cam'));
-  hide(document.getElementById('btn-screen'));
+  // Camera & screen-share are available during every call.
+  const showCb = el => { const it = el && el.closest('.cb-item'); if (it) it.style.display = ''; };
+  showCb(document.getElementById('btn-cam'));
+  showCb(document.getElementById('btn-screen'));
   if (!active) {
     app.classList.remove('show-chat', 'voice-mode');   // restore full chat when call ends
-    muted = false;
+    muted = false; sharing = false; camOn = false;
   }
-  syncMuteUI(); syncChatUI();
+  syncMuteUI(); syncCamUI(); syncShareUI(); syncChatUI();
 }
 
 // Toggle the chat panel during a call (video stays the main view).
@@ -2823,7 +2883,7 @@ function syncChatUI() {
 
 // ─── SCREEN SHARING ──────────────────────────────────────────────────────────
 async function toggleScreenShare() {
-  if (!activeCall) { showToast('Start a call first'); return; }
+  if (!inCall) { showToast('Start a call first'); return; }
   if (sharing) { stopScreenShare(); return; }
 
   if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
@@ -2862,17 +2922,18 @@ function stopScreenShare() {
   appendSystem('You stopped sharing your screen');
 }
 
-// Swap the outgoing video track without renegotiation (replaceTrack reuses the
-// existing m-line). Returns false if the call has no video sender to swap into.
+// Swap the outgoing video track on EVERY call without renegotiation (replaceTrack
+// reuses the existing m-line). Applies the change across the whole mesh.
 function replaceOutgoingVideo(track) {
-  const pc = activeCall && activeCall.peerConnection;
-  if (!pc) return false;
-  const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video')
-              || pc.getSenders().find(s => !s.track); // sender created but track-less
-  if (!sender) return false;
-  Promise.resolve(sender.replaceTrack(track)).catch(err =>
-    appendSystem('Could not switch video track: ' + (err.message || err.name)));
-  return true;
+  let any = false;
+  calls.forEach(c => {
+    const pc = c.mc && c.mc.peerConnection;
+    if (!pc) return;
+    const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video')
+                || pc.getSenders().find(s => !s.track);
+    if (sender) { Promise.resolve(sender.replaceTrack(track)).catch(() => {}); any = true; }
+  });
+  return any;
 }
 
 function syncShareUI() {
@@ -2900,7 +2961,7 @@ function syncMuteUI() {
 // Turn the real camera on/off mid-call. Works in voice calls too (upgrades to
 // video) because every call has a video lane provisioned up front.
 async function toggleCamera() {
-  if (!activeCall) { showToast('Start a call first'); return; }
+  if (!inCall) { showToast('Start a call first'); return; }
   if (!camOn) {
     if (!camTrack || camTrack.readyState === 'ended') {
       if (!mediaSupported()) { showToast('Camera needs an https:// or localhost page'); return; }
@@ -2936,13 +2997,13 @@ async function flipCamera() {
 // where the browser supports setSinkId (desktop Chrome/Edge); the button is
 // hidden elsewhere, since phones let the OS control routing.
 async function switchOutput() {
-  const v = document.getElementById('remote-video');
-  if (!v || typeof v.setSinkId !== 'function') { showToast('Your browser controls audio output'); return; }
+  const els = [...calls.values()].map(c => c.videoEl).filter(Boolean);
+  if (!els.length || typeof els[0].setSinkId !== 'function') { showToast('Your browser controls audio output'); return; }
   try {
     const outs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audiooutput');
     if (outs.length < 2) { showToast('Only one audio output available'); return; }
     sinkIndex = (sinkIndex + 1) % outs.length;
-    await v.setSinkId(outs[sinkIndex].deviceId);
+    await Promise.all(els.map(v => v.setSinkId(outs[sinkIndex].deviceId)));
     showToast('Output: ' + (outs[sinkIndex].label || ('Device ' + (sinkIndex + 1))));
   } catch (e) { showToast('Could not switch output'); }
 }
