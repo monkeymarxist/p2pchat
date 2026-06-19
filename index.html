@@ -749,7 +749,9 @@
     </div>
     <div class="intro-eyebrow">Private invite</div>
     <div class="intro-title">You&rsquo;re invited to chat</div>
-    <div class="intro-body">A direct, encrypted line &mdash; no account, no servers. Tap below to join.</div>
+    <div class="intro-body">A direct, encrypted line &mdash; no account, no servers. Add your name (optional), then tap to join.</div>
+    <input id="gate-nick" type="text" maxlength="24" placeholder="Your name (optional)" aria-label="Your display name"
+           style="width:100%;margin:4px 0 12px;box-sizing:border-box" />
     <button class="btn btn-primary intro-btn" id="invite-join-btn" onclick="joinFromInvite()">Join the chat</button>
     <div class="intro-skip" id="invite-gate-status">Secure &amp; private</div>
   </div>
@@ -958,6 +960,8 @@
 </div>
 
 <!-- ══ APP ════════════════════════════════════════════════════════════════ -->
+<!-- Hidden sink for group-call audio: one <audio> element per remote participant. -->
+<div id="call-audio" style="display:none"></div>
 <div id="app">
 
   <!-- topbar -->
@@ -995,7 +999,7 @@
         </svg>
       </button>
       <!-- video call (idle) -->
-      <button class="action-btn green" id="btn-call-video" title="Video call" onclick="startCall('video')">
+      <button class="action-btn green" id="btn-call-video" title="Video call (coming soon)" onclick="startCall('video')">
         <svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5"/>
           <rect x="2" y="6" width="14" height="12" rx="2"/>
@@ -1233,10 +1237,13 @@ let tearingDown = false;                // we intentionally ended → ignore str
 // Everyone holds a live data connection to everyone else. The host approves each
 // new joiner, then tells the joiner the roster (so it dials the others) and tells
 // the others about the joiner (so they accept its incoming dial).
-const peers    = new Map();   // peerId -> { id, conn, name, ready }
+const peers    = new Map();   // peerId -> { id, conn, name, ready, isHost }
 const approved = new Set();   // peerIds we'll auto-accept a mesh dial from
 let   amHost   = false;       // did we create this group (not arrive via invite)
+let   hostId   = '';          // the host's peer id (members only)
 let   callConn = null;        // the data connection of the 1:1 call peer (Stage 1)
+let   hostGoneTimer = null;   // grace window while a dropped host might return
+const HOST_GRACE_MS = 15000;  // how long members wait for the host to reconnect
 const MAX_PEERS = 3;          // up to 3 others → 4 people total
 
 const openConns  = () => [...peers.values()].filter(p => p.conn && p.conn.open);
@@ -1375,6 +1382,7 @@ function initPeer() {
     document.getElementById('copy-btn').disabled    = false;
     document.getElementById('share-btn').disabled   = false;
     document.getElementById('qr-btn').disabled       = false;
+    if (rejoinTargets) rejoinNow();   // came back after an accidental reload
     retryInvite();        // if opened via an invite link and the user tapped Join, connect
   });
 
@@ -1402,12 +1410,14 @@ function initPeer() {
     if (peers.has(c.peer)) { c.close(); return; }          // already linked
     if (openConns().length >= MAX_PEERS) { c.close(); return; } // group is full
     const kind = (c.metadata && c.metadata.kind) || 'join';
-    // A mesh dial from someone the host already vetted (or any member while we're
-    // in an active session) is accepted silently — they're already in the group.
+    // A dial from someone the host already vetted (or any member while we're in
+    // an active session) is accepted silently — they're already in the group. A
+    // previously-approved member re-dialling as a joiner (e.g. after a reload)
+    // still gets the accepted+roster handshake so they can re-enter cleanly.
     if (approved.has(c.peer) || (kind === 'mesh' && chatEntered)) {
       approved.add(c.peer);
       const rec = makeRec(c);
-      wireConn(rec, 'mesh');
+      wireConn(rec, kind === 'join' ? 'accept' : 'mesh');
       return;
     }
     // Otherwise it's a brand-new JOIN request → ask the host to approve.
@@ -1426,16 +1436,13 @@ function initPeer() {
   });
 
   peer.on('call', call => {
-    // Reject a second incoming call if we're already busy.
-    if (activeCall || pendingCall) { call.close(); return; }
-    pendingCall = call;
-    pendingMode = (call.metadata && call.metadata.mode === 'voice') ? 'voice' : 'video';
-    document.getElementById('call-modal-title').textContent =
-      'Incoming ' + (pendingMode === 'voice' ? 'voice' : 'video') + ' call';
-    document.getElementById('call-modal-from').textContent = call.peer;
-    document.getElementById('call-modal').classList.add('visible');
-    startRingtone();
-    startTitleAlert('🔔 Incoming call');
+    // Only group voice media calls are accepted. We answer automatically because
+    // the data-channel 'call-start' already prompted the user to join; the actual
+    // media call only arrives between two people who are BOTH already in the call.
+    if (!(call.metadata && call.metadata.group)) { try { call.close(); } catch {} return; }
+    if (!inCall || calls.has(call.peer)) { try { call.close(); } catch {} return; }
+    call.answer(localStream);
+    setupGroupCall(call, call.peer);
   });
 
   peer.on('disconnected', () => {
@@ -1471,6 +1478,7 @@ function connectToPeer() {
   if (peers.has(id)) { showToast('Already connected'); return; }
   if (connecting) return;                 // an attempt is already in flight
   connecting = true; isInitiator = true;  // we dialled the host → we await Accept
+  hostId = id;                            // the person who invited us is the host
   document.getElementById('status-txt').textContent = 'Connecting — waiting for them to accept…';
   dialPeer(id, 'join');
 }
@@ -1485,7 +1493,7 @@ function dialPeer(id, kind) {
 }
 
 function makeRec(c) {
-  const rec = { id: c.peer, conn: c, name: '', ready: false };
+  const rec = { id: c.peer, conn: c, name: '', ready: false, isHost: (c.peer === hostId && !amHost) };
   peers.set(c.peer, rec);
   return rec;
 }
@@ -1560,9 +1568,16 @@ function markReady(rec) {
   if (rec.ready) return;
   rec.ready = true;
   connecting = false;
-  try { rec.conn.send(JSON.stringify({ type: 'hello', name: myName || '' })); } catch {}
+  if (rec.isHost) clearHostGrace(true);     // the host came back
+  // Announce later joiners by NAME — defer the "joined" line until their hello
+  // arrives (so we show "Sunny Otter joined", never a raw peer id).
+  rec.announce = chatEntered && !rec.isHost; // don't announce the host returning as "joined"
+  try { rec.conn.send(JSON.stringify({ type: 'hello', name: displayName() })); } catch {}
+  // If a voice call is already in progress, let the newcomer know so they can join.
+  if (inCall) { try { rec.conn.send(JSON.stringify({ type: 'call-start' })); } catch {} }
   if (!chatEntered) enterChat();
-  else appendSystem((rec.name || rec.id) + ' joined');
+  else if (rec.name) { appendSystem(rec.name + ' joined'); rec.announce = false; }
+  saveSession();
   updateRoster();
 }
 
@@ -1581,22 +1596,46 @@ function announceJoin(rec) {
 function onPeerClose(rec, timeout) {
   clearTimeout(timeout);
   const wasReady = rec.ready;
+  const wasHost  = rec.isHost;
   peers.delete(rec.id);
+  saveSession();
   if (tearingDown) return;
   if (!wasReady) {                 // never connected: invite retry path
     connecting = false;
     if (!anyOpen() && !chatEntered) { handleNegotiationFail(); return; }
     return;
   }
-  if (anyOpen()) {                 // a member left, but the group lives on
-    appendSystem((rec.name || rec.id) + ' left');
-    if (activeCall && callConn && callConn.peer === rec.id) hangUp(false);
+  // If they were in the voice call, drop our audio link to them.
+  callPeers.delete(rec.id);
+  dropCall(rec.id);
+  // The HOST dropped → the whole session ends for everyone. Give the host a short
+  // grace window first, in case they only reloaded/crashed and are coming back.
+  if (wasHost && !amHost) { startHostGrace(); return; }
+  if (anyOpen()) {                 // a regular member left, group lives on
+    appendSystem(nameOf(rec) + ' left');
     updateRoster();
     return;
   }
   // The last peer left → end the session.
   hangUp(false);
   resetToLobby('Everyone left — session ended');
+}
+
+// A member's view: the host vanished. Wait a bit; if they don't return, end.
+function startHostGrace() {
+  if (hostGoneTimer) return;
+  appendSystem('⚠️ Host disconnected — waiting up to 15s for them to return…');
+  document.getElementById('status-txt').textContent = 'Host disconnected — waiting…';
+  hostGoneTimer = setTimeout(() => {
+    hostGoneTimer = null;
+    hangUp(false);
+    resetToLobby('Host ended the session');
+  }, HOST_GRACE_MS);
+}
+function clearHostGrace(returned) {
+  if (!hostGoneTimer) return;
+  clearTimeout(hostGoneTimer); hostGoneTimer = null;
+  if (returned) appendSystem('Host reconnected ✓');
 }
 
 function onPeerError(rec, timeout, err) {
@@ -1621,22 +1660,24 @@ function handleData(rec, raw) {
   if (!data || typeof data !== 'object') return;
 
   // Handshake / membership control messages.
+  if (data.type === 'end-all')  { if (rec.isHost) { hangUp(false); resetToLobby('Host ended the session'); } return; }
   if (data.type === 'accepted') { markReady(rec); return; }      // host approved us
   if (data.type === 'declined') { onDeclined(rec); return; }
   if (data.type === 'roster')   { onRoster(data.members); return; }
   if (data.type === 'peer-join'){ if (typeof data.id === 'string') approved.add(data.id); return; }
   if (data.type === 'hello')    {
     rec.name = (typeof data.name === 'string' ? data.name.replace(/[<>]/g, '').slice(0, 24) : '');
-    updateRoster(); return;
+    if (rec.announce && rec.name) { appendSystem(rec.name + ' joined'); rec.announce = false; }
+    saveSession(); updateRoster(); return;
   }
   // Everything else requires us to be inside the chat.
   if (!chatEntered) return;
-  if      (data.type === 'msg')       receiveMessage(rec, data);
-  else if (data.type === 'file-meta') receiveFileMeta(rec.id, data);
-  else if (data.type === 'file-done') receiveFileDone(rec.id, data);
-  else if (data.type === 'call-end')  hangUp(false);
-  else if (data.type === 'media')   { remoteVideoActive = !!data.video; updateCallView(); }
-  else if (data.type === 'typing')  { data.on ? showTyping(rec) : hideTyping(); }
+  if      (data.type === 'msg')        receiveMessage(rec, data);
+  else if (data.type === 'file-meta')  receiveFileMeta(rec.id, data);
+  else if (data.type === 'file-done')  receiveFileDone(rec.id, data);
+  else if (data.type === 'call-start') onCallStart(rec);
+  else if (data.type === 'call-leave') onCallLeave(rec);
+  else if (data.type === 'typing')   { data.on ? showTyping(rec) : hideTyping(); }
   else if (data.type === 'ack')     { markDelivered(Number(data.ts)); }
 }
 
@@ -1753,17 +1794,23 @@ function onDeclined(rec) {
 // User-initiated full disconnect. Closing every connection notifies each peer
 // (their close handler fires) so everyone returns to the lobby.
 function endSession() {
+  // If we're the host, tell everyone to end now (don't make them wait out the
+  // grace window). A flush delay lets the message leave before we close.
+  if (amHost && anyOpen()) { broadcast({ type: 'end-all' }); }
   tearingDown = true;
-  closeAllPeers();
-  hangUp(false);
-  resetToLobby('Session ended');
+  setTimeout(() => {
+    closeAllPeers();
+    hangUp(false);
+    resetToLobby('Session ended');
+  }, amHost ? 150 : 0);
 }
 
 function closeAllPeers() {
   peers.forEach(p => { try { p.conn.close(); } catch {} });
   peers.clear();
   approved.clear();
-  amHost = false;
+  amHost = false; hostId = '';
+  if (hostGoneTimer) { clearTimeout(hostGoneTimer); hostGoneTimer = null; }
 }
 
 // Tear everything down and go back to the lobby (reusable for a fresh session).
@@ -1772,6 +1819,7 @@ function resetToLobby(note) {
   stopStats();
   closeAllPeers();
   callConn = null;
+  clearSession();                  // a deliberate end → don't auto-rejoin later
   for (const k in fileChunks) delete fileChunks[k];
   totalBuffered = 0;
   chatEntered = false; isInitiator = false; connecting = false; connOpened = false;
@@ -1785,6 +1833,55 @@ function resetToLobby(note) {
   document.getElementById('status-txt').textContent =
     (peer && peer.id) ? 'Ready — share your invite link' : 'Setting up your private line…';
   if (note) showToast(note);
+}
+
+// ─── REJOIN AFTER AN ACCIDENTAL RELOAD ───────────────────────────────────────
+// We remember the live roster in sessionStorage (survives a reload/crash within
+// the same tab, cleared when the tab closes). If the page reloads while a chat
+// was open, we redial those members and slip back in. The peer id itself is also
+// reused (sessionStorage 'myPeerId'), so the others recognise us.
+let rejoinTargets = null;
+function saveSession() {
+  try {
+    if (!chatEntered) return;
+    const ids = openConns().map(p => p.id);
+    if (!ids.length) { sessionStorage.removeItem('p2p_session'); return; }
+    sessionStorage.setItem('p2p_session', JSON.stringify({ host: amHost, hostId, members: ids, ts: Date.now() }));
+  } catch {}
+}
+function clearSession() { try { sessionStorage.removeItem('p2p_session'); } catch {} }
+
+// Boot helper: is there a recent session we should try to slip back into?
+function pendingRejoin() {
+  let s; try { s = JSON.parse(sessionStorage.getItem('p2p_session') || 'null'); } catch {}
+  if (!s || !Array.isArray(s.members) || !s.members.length) return false;
+  if (Date.now() - (s.ts || 0) > 120000) { clearSession(); return false; }  // too old
+  amHost = !!s.host;
+  hostId = s.hostId || '';
+  rejoinTargets = s.members.slice();
+  return true;
+}
+// Called once the peer is open: redial the remembered members.
+function rejoinNow() {
+  const ids = rejoinTargets; rejoinTargets = null;
+  if (!ids || !ids.length) return;
+  joinConfirmed = true;                       // so retry/visibility logic stays happy
+  document.getElementById('status-txt').textContent = 'Rejoining your group…';
+  ids.forEach(id => {
+    if (id === peer.id || peers.has(id)) return;
+    // Dial the host as a joiner (await re-approval handshake); dial fellow
+    // members straight into the mesh.
+    dialPeer(id, (!amHost && id === hostId) ? 'join' : 'mesh');
+  });
+  // If nobody answers (everyone already left), fall back to a clean lobby.
+  setTimeout(() => {
+    if (chatEntered || rejoinTargets) return;
+    if (!anyOpen()) {
+      clearSession(); joinConfirmed = false; connecting = false;
+      document.getElementById('status-txt').textContent =
+        (peer && peer.id) ? 'Ready — share your invite link' : 'Setting up your private line…';
+    }
+  }, 12000);
 }
 
 // ─── INVITE LINK (one-click connect) ─────────────────────────────────────────
@@ -1887,6 +1984,13 @@ function joinFromInvite() {
   joinConfirmed = true;
   connectAttempts = 0;                      // fresh round of auto-retries
   getAudioCtx();                            // unlock audio on this gesture
+  // Capture the optional name typed on the join screen.
+  const gn = document.getElementById('gate-nick');
+  if (gn && gn.value.trim()) {
+    myName = gn.value.replace(/[<>]/g, '').slice(0, 24);
+    try { localStorage.setItem('p2p_nick', myName); } catch {}
+    const li = document.getElementById('nick-input'); if (li) li.value = myName;
+  }
   const btn = document.getElementById('invite-join-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Connecting…'; }
   updateGateStatus('Connecting securely…');
@@ -1926,22 +2030,33 @@ let unread = 0;                     // messages received while chat hidden in a 
 const ackEls = {};                  // ts → time element, for delivered ticks
 let typingSentAt = 0, typingOffTimer = null, typingHideTimer = null;
 
+// A friendly, human fallback name so nobody ever shows up as a random peer id.
+const NAME_ADJ  = ['Quiet', 'Brave', 'Clever', 'Happy', 'Swift', 'Calm', 'Bright', 'Kind', 'Bold', 'Gentle', 'Lucky', 'Sunny'];
+const NAME_ANIM = ['Otter', 'Fox', 'Panda', 'Heron', 'Tiger', 'Koala', 'Falcon', 'Dolphin', 'Bison', 'Lynx', 'Robin', 'Badger'];
+const pick = a => a[Math.floor(Math.random() * a.length)];
+const fallbackName = pick(NAME_ADJ) + ' ' + pick(NAME_ANIM);   // stable for this page load
+// The name we actually present to others: your chosen name, else the friendly one.
+function displayName() { return (myName && myName.trim()) || fallbackName; }
+
 function loadNick() {
   try { myName = (localStorage.getItem('p2p_nick') || '').slice(0, 24); } catch {}
   const i = document.getElementById('nick-input'); if (i) i.value = myName;
+  const g = document.getElementById('gate-nick'); if (g) g.value = myName;
 }
 function saveNick() {
   const i = document.getElementById('nick-input');
   myName = (i.value || '').replace(/[<>]/g, '').slice(0, 24);
   try { localStorage.setItem('p2p_nick', myName); } catch {}
+  // If we're already in a chat, let everyone know our (new) name right away.
+  if (anyOpen()) broadcast({ type: 'hello', name: displayName() });
 }
-// Display name for a peer (their chosen name, else a short id).
-function nameOf(rec) { return (rec && (rec.name || rec.id)) || 'Them'; }
+// Display name for a peer (their chosen name, else a friendly placeholder).
+function nameOf(rec) { return (rec && rec.name) ? rec.name : 'Member'; }
 
 // Refresh the topbar: who's in the group and how many.
 function updateRoster() {
   const ready = openConns();
-  const names = ready.map(p => p.name || (p.id.slice(0, 6) + '…'));
+  const names = ready.map(nameOf);
   const titleEl = document.getElementById('peer-name');
   const subEl   = document.getElementById('connected-peer-id');
   const n = ready.length + 1;   // include me
@@ -1952,8 +2067,8 @@ function updateRoster() {
   }
   if (subEl) {
     subEl.textContent = (n <= 2)
-      ? (ready[0] ? ready[0].id : '')
-      : (['You', ...names].join(', '));
+      ? (names[0] || '')
+      : ([displayName() + ' (you)', ...names].join(', '));
   }
 }
 
@@ -2411,99 +2526,159 @@ function initVideoState() {
   if (camOn) detectCameras();   // figure out whether to show the flip button
 }
 
-async function startCall(mode) {
-  const c = primaryConn();
-  if (!c) { showToast('Not connected to a peer'); return; }
-  if (activeCall) { showToast('Already in a call'); return; }
-  // Stage 1: calls are still 1-to-1. Group video/voice is coming next.
-  if (memberCount() > 2) { showToast('Group calls are coming soon — calls work in 2-person chats for now'); return; }
-  callConn = c;
-  voiceMode = (mode === 'voice');
-  localStream = await getMedia(mode);
-  initVideoState();
-  playInVideo('local-video', localStream);
-  activeCall = peer.call(c.peer, localStream, { metadata: { mode: voiceMode ? 'voice' : 'video' } });
-  setupCallHandlers(activeCall);
-  showCallUI(true);
-  signalMedia(videoActive);
-  updateCallView();
-  setCallPill('Ringing…'); startRingback();   // caller waits for the answer
-  appendSystem((voiceMode ? 'Voice' : 'Video') + ' call started — ' + cameraStatus);
-}
+// ─── GROUP VOICE CALLS (mesh audio) ──────────────────────────────────────────
+// Everyone in the call opens a direct audio connection to every other person in
+// the call (full mesh). Video is deliberately NOT wired yet — it comes once voice
+// is fully tested. The peer with the smaller id places each call to avoid doubles.
+let inCall = false;          // am I currently in the group voice call
+let callRinging = false;     // is the incoming-call prompt showing
+const callPeers = new Set(); // ids of members currently IN the call (not me)
+const calls     = new Map(); // peerId -> { mc, audioEl }
 
-async function answerCall() {
-  stopRingtone(); stopTitleAlert();
-  document.getElementById('call-modal').classList.remove('visible');
-  if (!pendingCall) return; // caller hung up before we answered
-  callConn = (peers.get(pendingCall.peer) || {}).conn || primaryConn();
-  voiceMode = (pendingMode === 'voice');   // match the caller's chosen mode
-  localStream = await getMedia(pendingMode);
-  initVideoState();
-  playInVideo('local-video', localStream);
-  pendingCall.answer(localStream);
-  activeCall = pendingCall;
-  setupCallHandlers(activeCall);
-  showCallUI(true);
-  signalMedia(videoActive);
-  updateCallView();
-  setCallPill('Connecting…');
-  appendSystem((voiceMode ? 'Voice' : 'Video') + ' call answered — ' + cameraStatus);
-  pendingCall = null;
-}
-
-function rejectCall() {
-  // Tell the caller so their ringing/calling state ends too.
-  const c = (pendingCall && peers.get(pendingCall.peer) || {}).conn;
-  if (c && c.open) { try { c.send(JSON.stringify({ type: 'call-end' })); } catch {} }
-  stopRingtone(); stopTitleAlert();
-  document.getElementById('call-modal').classList.remove('visible');
-  if (pendingCall) { try { pendingCall.close(); } catch {} pendingCall = null; }
-  appendSystem('Call declined');
-}
-
-function setupCallHandlers(call) {
-  call.on('stream', s => { playInVideo('remote-video', s); startCallTimer(); });   // connected → timer
-  // Remote media link closed: tear down locally (don't re-signal — avoid a loop).
-  call.on('close',  () => { if (activeCall === call) hangUp(false); });
-  call.on('error',  err => { showToast('Call error: ' + (err.message || err.type)); hangUp(false); });
-}
-
-// notify=true → tell the peer over the data channel so their side ends too.
-// This is the reliable termination path (PeerJS media 'close' is unreliable).
-function hangUp(notify = true) {
-  const wasActive = !!activeCall || !!localStream || !!pendingCall;
-  if (notify && callConn && callConn.open && wasActive) {
-    try { callConn.send(JSON.stringify({ type: 'call-end' })); } catch {}
+async function getMicStream() {
+  if (!mediaSupported()) {
+    appendSystem('⚠️ ' + (window.isSecureContext
+      ? 'This browser does not expose microphone access.'
+      : 'Mic blocked — open this page over https:// or localhost, not as a file://.'));
+    return new MediaStream();
   }
-  callConn = null;
+  try { return await navigator.mediaDevices.getUserMedia({ audio: true, video: false }); }
+  catch (e) { appendSystem('⚠️ ' + explainMediaError(e)); return new MediaStream(); }
+}
+
+// Start (or be the first into) the group voice call.
+async function startCall(mode) {
+  if (mode === 'video') { showToast('Video calls are coming soon — voice is ready now'); return; }
+  if (inCall) { showToast('You’re already in the call'); return; }
+  if (!anyOpen()) { showToast('Not connected to anyone yet'); return; }
+  localStream = await getMicStream();
+  enterCall();
+  setCallPill(callPeers.size ? 'Connecting…' : 'Waiting for others…');
+  if (!callPeers.size) startRingback();          // alone so far → soft ringback
+  appendSystem('You started a voice call');
+}
+
+// Answer the "incoming group call" prompt → join the call.
+async function answerCall() {
+  stopRingtone(); stopTitleAlert(); callRinging = false;
+  document.getElementById('call-modal').classList.remove('visible');
+  if (inCall) return;
+  localStream = await getMicStream();
+  enterCall();
+  appendSystem('You joined the voice call');
+}
+
+// Dismiss the incoming-call prompt without joining.
+function rejectCall() {
+  stopRingtone(); stopTitleAlert(); callRinging = false;
+  document.getElementById('call-modal').classList.remove('visible');
+}
+
+// Shared join logic: announce we're in, then connect to everyone already in.
+function enterCall() {
+  inCall = true; muted = false;
+  showCallUI(true);
+  updateCallView();
+  broadcast({ type: 'call-start' });
+  [...callPeers].forEach(maybeConnectCall);
+}
+
+// Open an audio link to a peer if we both belong in the call. The smaller id
+// dials; the other waits to receive it — so each pair connects exactly once.
+function maybeConnectCall(peerId) {
+  if (!inCall || calls.has(peerId) || !callPeers.has(peerId)) return;
+  const rec = peers.get(peerId);
+  if (!rec || !rec.conn.open) return;
+  if (peer.id < peerId) {
+    const mc = peer.call(peerId, localStream, { metadata: { group: true, mode: 'voice' } });
+    setupGroupCall(mc, peerId);
+  }
+}
+
+function setupGroupCall(mc, peerId) {
+  calls.set(peerId, { mc, audioEl: null });
+  mc.on('stream', s => attachCallAudio(peerId, s));
+  mc.on('close',  () => dropCall(peerId));
+  mc.on('error',  () => dropCall(peerId));
+  startCallTimer();            // stops ringback, shows the running timer
+  updateCallView();
+}
+
+// Play a peer's incoming audio through a hidden <audio> element.
+function attachCallAudio(peerId, stream) {
+  const c = calls.get(peerId); if (!c) return;
+  if (!c.audioEl) {
+    const a = document.createElement('audio');
+    a.autoplay = true; a.setAttribute('playsinline', '');
+    document.getElementById('call-audio').appendChild(a);
+    c.audioEl = a;
+  }
+  c.audioEl.srcObject = stream;
+  const p = c.audioEl.play(); if (p && p.catch) p.catch(() => {});
+  updateCallView();
+}
+
+function dropCall(peerId) {
+  const c = calls.get(peerId); if (!c) return;
+  try { c.mc.close(); } catch {}
+  if (c.audioEl) { c.audioEl.srcObject = null; c.audioEl.remove(); }
+  calls.delete(peerId);
+  updateCallView();
+}
+
+// Leave the call (notify=true tells the others). Also the teardown used on reset.
+function hangUp(notify = true) {
+  const was = inCall || !!localStream;
+  if (notify && inCall && anyOpen()) broadcast({ type: 'call-leave' });
+  inCall = false; callRinging = false;
+  calls.forEach(c => { try { c.mc.close(); } catch {} if (c.audioEl) { c.audioEl.srcObject = null; c.audioEl.remove(); } });
+  calls.clear();
+  if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
   stopRingtone(); stopTitleAlert(); stopRingback(); stopCallTimer();
   document.getElementById('call-modal').classList.remove('visible');
-  if (pendingCall) { try { pendingCall.close(); } catch {} pendingCall = null; }
-  if (activeCall)  { try { activeCall.close();  } catch {} activeCall  = null; }
-  if (screenStream) { screenStream.getTracks().forEach(t => t.stop()); screenStream = null; }
-  if (camTrack)     { camTrack.stop(); camTrack = null; }
-  if (localStream)  { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
-  clearInterval(blankTimer); blankTimer = null; blankTrack = null;
-  sharing = false; camOn = false; videoActive = false; remoteVideoActive = false;
-  facingMode = 'user'; hasMultiCam = false; sinkIndex = 0;
-  document.getElementById('local-video').srcObject  = null;
-  document.getElementById('remote-video').srcObject = null;
+  pendingCall = null; muted = false;
   showCallUI(false);
-  if (wasActive) appendSystem('Call ended');
+  if (was) appendSystem('You left the call');
+  updateCallView();
 }
 
-function signalMedia(on) {
-  if (callConn && callConn.open) { try { callConn.send(JSON.stringify({ type: 'media', video: !!on })); } catch {} }
+// A member announced they're in the call.
+function onCallStart(rec) {
+  callPeers.add(rec.id);
+  if (inCall) { maybeConnectCall(rec.id); updateCallView(); return; }
+  // We're not in the call yet → ring and offer to join.
+  if (!callRinging) {
+    callRinging = true;
+    document.getElementById('call-modal-title').textContent = 'Group voice call';
+    document.getElementById('call-modal-from').textContent = nameOf(rec) + ' is calling';
+    document.getElementById('call-modal').classList.add('visible');
+    startRingtone(); startTitleAlert('🔔 Incoming voice call');
+  }
 }
 
-// Show the video panel when EITHER side is sending real video; otherwise the
-// audio-only ("voice") overlay.
+// A member left the call.
+function onCallLeave(rec) {
+  callPeers.delete(rec.id);
+  dropCall(rec.id);
+  if (inCall) appendSystem(nameOf(rec) + ' left the call');
+  if (!inCall && callRinging && callPeers.size === 0) {  // nobody calling anymore
+    stopRingtone(); stopTitleAlert(); callRinging = false;
+    document.getElementById('call-modal').classList.remove('visible');
+  }
+  updateCallView();
+}
+
+function signalMedia() { /* no-op until video calls are wired back in */ }
+
+// Reflect call state in the audio-only overlay (no video tiles yet).
 function updateCallView() {
-  const showVideo = !!activeCall && (videoActive || remoteVideoActive);
-  document.getElementById('app').classList.toggle('voice-mode', !!activeCall && !showVideo);
-  if (activeCall && !showVideo) {
-    const r = callConn && peers.get(callConn.peer);
-    document.getElementById('voice-peer').textContent = r ? nameOf(r) : '';
+  document.getElementById('app').classList.toggle('voice-mode', inCall);
+  if (inCall) {
+    const names = [...calls.keys()].map(id => nameOf(peers.get(id)));
+    const el = document.getElementById('voice-peer');
+    if (el) el.textContent = names.length ? names.join(', ') : 'Waiting for others…';
+    const title = document.querySelector('#voice-overlay .voice-title');
+    if (title) title.textContent = (calls.size > 1) ? ('Group voice · ' + (calls.size + 1)) : 'Voice call';
   }
 }
 
@@ -2524,8 +2699,12 @@ function toggleStats() {
   const p = document.getElementById('stats-panel'); if (p) p.classList.toggle('show');
 }
 function activePc() {
+  if (inCall) {
+    const first = calls.values().next().value;
+    if (first && first.mc && first.mc.peerConnection) return first.mc.peerConnection;
+  }
   const c = primaryConn();
-  return (activeCall && activeCall.peerConnection) || (c && c.peerConnection) || null;
+  return c ? c.peerConnection : null;
 }
 
 async function pollStats() {
@@ -2618,16 +2797,15 @@ function showCallUI(active) {
   const idleDisplay = active ? 'none' : 'flex';
   document.getElementById('btn-call-video').style.display = idleDisplay;
   document.getElementById('btn-call-voice').style.display = idleDisplay;
-  // Camera & screen-share are available in EVERY call now — including a voice
-  // call, so you can switch them on mid-call.
-  document.getElementById('btn-cam').style.display    = '';
-  document.getElementById('btn-screen').style.display = '';
+  // Voice-only phase: hide the video/screen controls (camera comes back with video).
+  const hide = el => { const it = el && el.closest('.cb-item'); if (it) it.style.display = 'none'; };
+  hide(document.getElementById('btn-cam'));
+  hide(document.getElementById('btn-screen'));
   if (!active) {
     app.classList.remove('show-chat', 'voice-mode');   // restore full chat when call ends
-    voiceMode = false; muted = false; sharing = false; camOn = false;
-    videoActive = false; remoteVideoActive = false;
+    muted = false;
   }
-  syncMuteUI(); syncCamUI(); syncShareUI(); syncChatUI();
+  syncMuteUI(); syncChatUI();
 }
 
 // Toggle the chat panel during a call (video stays the main view).
@@ -3080,10 +3258,15 @@ loadConnMode(); // restore Relay/P2P choice (default Relay)
 // (silently; no toast, since the invitee didn't tap the toggle themselves).
 if (inviteMode === 'p2p') { connMode = 'p2p'; applyConnMode(); }
 // Invite-link openers skip the manifesto intro and get a fast "Join" confirm.
+// A reloaded page with a still-live session reconnects straight back in.
 if (autoConnectId) {
   const intro = document.getElementById('intro');
   if (intro) intro.remove();
   showInviteGate();
+} else if (pendingRejoin()) {
+  const intro = document.getElementById('intro');
+  if (intro) intro.remove();
+  // rejoinNow() runs as soon as the peer is open (see peer.on('open')).
 } else {
   initIntro();
 }
