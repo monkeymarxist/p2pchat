@@ -362,62 +362,34 @@
     display: flex; flex: 0 0 320px; border-left: 1px solid var(--border);
   }
 
-  /* Remote video fills the panel responsively, preserving aspect ratio
-     (letterboxed). min-height/min-width:0 stop the flex item from growing to
-     the stream's intrinsic size and overflowing/cropping on desktop resize. */
-  #remote-video {
-    flex: 1 1 0; min-height: 0; min-width: 0;
-    width: 100%; height: 100%;
-    object-fit: contain; background: #0a0a0a; display: block;
+  /* ─── GROUP CALL: SPOTLIGHT STAGE + THUMBNAIL STRIP ─────────────────────── */
+  #call-grid { position: relative; flex: 1 1 0; min-height: 0; min-width: 0; width: 100%; height: 100%; overflow: hidden; }
+  #call-stage { position: absolute; inset: 0; }
+  #call-strip {
+    position: absolute; right: 10px; bottom: 94px; z-index: 2;
+    display: flex; flex-direction: column; gap: 6px; align-items: flex-end;
+    max-height: calc(100% - 120px); overflow-y: auto; overflow-x: hidden;
   }
-  #local-video {
-    position: absolute; bottom: 80px; right: 10px;
-    width: 90px; height: 68px; object-fit: cover;
-    border-radius: 8px; border: 2px solid var(--accent); background: #111; z-index: 2;
+  .video-tile { position: relative; background: #0a0a0a; overflow: hidden; }
+  .video-tile video { width: 100%; height: 100%; display: block; background: #111; }
+  /* Spotlighted person fills the stage (full frame, no crop). */
+  .video-tile.main { width: 100%; height: 100%; }
+  .video-tile.main video { object-fit: contain; }
+  /* Everyone else is a small, tappable thumbnail. */
+  .video-tile.thumb {
+    width: 124px; height: 86px; border-radius: 8px; cursor: pointer; flex: 0 0 auto;
+    border: 2px solid rgba(255,255,255,.28); box-shadow: 0 2px 8px rgba(0,0,0,.45);
   }
-
-  /* ─── GROUP CALL VIDEO GRID ─────────────────────────────────────────────── */
-  #call-grid {
-    flex: 1 1 0; min-height: 0; min-width: 0; width: 100%; height: 100%;
-    display: grid; gap: 6px; padding: 6px; align-content: stretch;
-    grid-template-columns: 1fr;            /* overridden per participant count */
-    box-sizing: border-box; padding-bottom: 84px;  /* leave room for the call bar */
-  }
-  .video-tile {
-    position: relative; background: #0a0a0a; border-radius: 10px;
-    overflow: hidden; min-height: 0; min-width: 0;
-  }
-  .video-tile video {
-    width: 100%; height: 100%; object-fit: cover; display: block; background: #111;
-  }
+  .video-tile.thumb video { object-fit: cover; }
+  .video-tile.thumb:hover { border-color: var(--accent); }
   .video-tile.local video { transform: scaleX(-1); }   /* mirror your own preview */
   .tile-name {
-    position: absolute; bottom: 6px; left: 6px; z-index: 2;
-    font-size: .66rem; color: #fff; background: rgba(0,0,0,.55);
-    padding: 2px 7px; border-radius: 6px; backdrop-filter: blur(4px);
-    max-width: 80%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    position: absolute; bottom: 4px; left: 4px; z-index: 2;
+    font-size: .6rem; color: #fff; background: rgba(0,0,0,.55);
+    padding: 1px 6px; border-radius: 5px; backdrop-filter: blur(4px);
+    max-width: 90%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  .tile-muted { position: absolute; top: 6px; right: 6px; z-index: 2; font-size: .8rem; opacity: .9; }
-
-  /* Voice-call view: hide the video, show an avatar + label instead. */
-  .voice-overlay {
-    position: absolute; inset: 0; display: none;
-    flex-direction: column; align-items: center; justify-content: center; gap: 14px;
-    background: radial-gradient(circle at 50% 38%, #1b1b29, #0a0a0a);
-    color: var(--text); text-align: center; padding: 20px;
-  }
-  #app.voice-mode #voice-overlay { display: flex; }
-  #app.voice-mode #remote-video,
-  #app.voice-mode #local-video,
-  #app.voice-mode .video-label { display: none; }
-  .voice-ava {
-    width: 92px; height: 92px; border-radius: 50%;
-    background: var(--accent-dim); border: 2px solid var(--accent);
-    display: flex; align-items: center; justify-content: center; color: var(--accent);
-    animation: pulse 2s ease-in-out infinite;
-  }
-  .voice-title { font-weight: 700; font-size: 1.05rem; }
-  .voice-sub { font-size: .74rem; color: var(--text2); font-family: monospace; word-break: break-all; max-width: 80%; }
+  .video-tile.main .tile-name { top: 10px; left: 10px; bottom: auto; font-size: .72rem; padding: 3px 9px; }
 
   .call-timer {
     position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 3;
@@ -425,16 +397,10 @@
     background: rgba(0,0,0,.55); padding: 3px 10px; border-radius: 20px;
     backdrop-filter: blur(4px); font-variant-numeric: tabular-nums;
   }
-  .video-label {
-    position: absolute; top: 10px; left: 10px; z-index: 2;
-    font-size: .7rem; color: rgba(255,255,255,.55);
-    background: rgba(0,0,0,.55); padding: 3px 8px; border-radius: 4px;
-    backdrop-filter: blur(4px);
-  }
 
   /* floating call bar (shown during active call, inside video panel) */
   .call-bar {
-    position: absolute; bottom: 0; left: 0; right: 0;
+    position: absolute; bottom: 0; left: 0; right: 0; z-index: 5;
     display: flex; align-items: flex-end; justify-content: center; gap: 12px;
     flex-wrap: wrap; row-gap: 8px;
     padding: 12px 16px;
@@ -650,10 +616,9 @@
       display: flex; flex: 1 1 auto; border-left: none;
     }
 
-    #local-video {
-      width: 72px; height: 54px;
-      bottom: 68px; right: 8px;
-    }
+    /* Smaller call thumbnails on phones */
+    #call-strip { right: 8px; bottom: 84px; max-height: calc(100% - 104px); }
+    .video-tile.thumb { width: 92px; height: 64px; }
 
     /* Call bar: slightly more compact */
     .call-bar { padding: 8px 16px; gap: 14px; }
@@ -2546,6 +2511,9 @@ let inCall = false;          // am I currently in the call
 let callRinging = false;     // is the incoming-call prompt showing
 const callPeers = new Set(); // ids of members currently IN the call (not me)
 const calls     = new Map(); // peerId -> { mc, videoEl, tileEl }
+let spotlightId = null;      // who is in the big "stage" ('me' or a peer id)
+let spotlightManual = false; // did the user tap to choose the spotlight
+let localTile   = null;      // my own video tile element
 
 // Acquire mic (+ camera if wanted) and GUARANTEE a video lane (placeholder if no
 // real camera), so the lane exists for later replaceTrack upgrades.
@@ -2660,6 +2628,7 @@ function hangUp(notify = true) {
   stopRingtone(); stopTitleAlert(); stopRingback(); stopCallTimer();
   document.getElementById('call-modal').classList.remove('visible');
   pendingCall = null; muted = false;
+  spotlightId = null; spotlightManual = false; localTile = null;
   const grid = document.getElementById('call-grid'); if (grid) grid.innerHTML = '';
   showCallUI(false);
   if (was) appendSystem('You left the call');
@@ -2693,37 +2662,39 @@ function onCallLeave(rec) {
 
 function signalMedia() { /* video shows via the live placeholder track; no separate signal needed */ }
 
-// ── Video grid ──
-// Build the grid from scratch: a local-preview tile plus a tile per connected
-// peer. Called when we enter the call.
+// ── Spotlight stage + thumbnail strip ──
+// One participant fills the stage; everyone else (including you) is a small
+// tappable thumbnail. Tapping a thumbnail swaps that person into the stage.
 function buildGrid() {
   const grid = document.getElementById('call-grid');
   if (!grid) return;
-  grid.innerHTML = '';
-  const tile = el('div', 'video-tile local');
+  grid.innerHTML =
+    '<div id="call-stage"></div><div id="call-strip"></div>';
+  // Build my own tile.
+  localTile = el('div', 'video-tile local');
   const v = document.createElement('video');
   v.autoplay = true; v.muted = true; v.id = 'local-video'; v.setAttribute('playsinline', '');
   const name = el('div', 'tile-name'); name.textContent = displayName() + ' (you)';
-  tile.append(v, name);
-  grid.appendChild(tile);
+  localTile.append(v, name);
+  localTile.onclick = () => setSpotlight('me');
   showLocalPreview();
+  spotlightId = null; spotlightManual = false;   // default chosen in layoutCall()
   calls.forEach((c, id) => addTile(id));
-  updateCallView();
+  layoutCall();
 }
 
 // Add a tile for one remote peer (and attach their stream if it's already here).
 function addTile(peerId) {
-  const grid = document.getElementById('call-grid'); if (!grid) return;
   const c = calls.get(peerId); if (!c || c.tileEl) return;
   const tile = el('div', 'video-tile');
   const v = document.createElement('video');
   v.autoplay = true; v.setAttribute('playsinline', '');
   const name = el('div', 'tile-name'); name.textContent = nameOf(peers.get(peerId));
   tile.append(v, name);
-  grid.appendChild(tile);
+  tile.onclick = () => setSpotlight(peerId);
   c.videoEl = v; c.tileEl = tile;
   if (c.mc && c.mc.remoteStream) attachCallMedia(peerId, c.mc.remoteStream);
-  updateCallView();
+  layoutCall();
 }
 
 function showLocalPreview() {
@@ -2731,16 +2702,42 @@ function showLocalPreview() {
   if (v && localStream) { v.srcObject = localStream; const p = v.play(); if (p && p.catch) p.catch(() => {}); }
 }
 
-// Lay out the grid (1 column solo, 2 columns otherwise) and refresh name labels.
-function updateCallView() {
-  const grid = document.getElementById('call-grid');
-  if (!grid) return;
-  const n = calls.size + 1;                       // include me
-  grid.style.gridTemplateColumns = (n <= 1) ? '1fr' : '1fr 1fr';
-  calls.forEach((c, id) => {
-    if (c.tileEl) { const lbl = c.tileEl.querySelector('.tile-name'); if (lbl) lbl.textContent = nameOf(peers.get(id)); }
+// Pick who to spotlight, then move tiles into the stage / strip accordingly.
+function setSpotlight(id) { spotlightId = id; spotlightManual = true; layoutCall(); }
+
+function layoutCall() {
+  const stage = document.getElementById('call-stage');
+  const strip = document.getElementById('call-strip');
+  if (!stage || !strip) return;
+  // Participants in order: me first, then each connected peer.
+  const parts = [{ id: 'me', tile: localTile }];
+  calls.forEach((c, id) => { if (c.tileEl) parts.push({ id, tile: c.tileEl }); });
+  // A manual choice wins (while that person is still here); otherwise auto-spotlight
+  // the first remote participant (so you see THEM big, not yourself), else me.
+  let mainId;
+  if (spotlightManual && parts.some(p => p.id === spotlightId)) mainId = spotlightId;
+  else mainId = parts[1] ? parts[1].id : 'me';
+  spotlightId = mainId;
+  parts.forEach(p => {
+    const isMain = (p.id === mainId);
+    p.tile.classList.toggle('main', isMain);
+    p.tile.classList.toggle('thumb', !isMain);
+    const target = isMain ? stage : strip;
+    if (p.tile.parentElement !== target) {
+      target.appendChild(p.tile);
+      const vid = p.tile.querySelector('video');     // some browsers pause a moved <video>
+      if (vid) { const pr = vid.play(); if (pr && pr.catch) pr.catch(() => {}); }
+    }
+    if (p.id !== 'me') {
+      const lbl = p.tile.querySelector('.tile-name');
+      if (lbl) lbl.textContent = nameOf(peers.get(p.id));
+    }
   });
+  strip.style.display = (parts.length > 1) ? 'flex' : 'none';
 }
+
+// Back-compat alias used throughout the call code.
+function updateCallView() { layoutCall(); }
 
 // ─── LIVE CONNECTION STATS ───────────────────────────────────────────────────
 // Polls WebRTC getStats() once a second on the active connection (the call's
