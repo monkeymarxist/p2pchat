@@ -773,7 +773,7 @@
   <!-- Hero: the one action that matters -->
   <div class="card">
     <div class="lobby-lead">Start a private line</div>
-    <p class="lobby-sub">Send your invite link to one person. When they open it you'll get a knock — accept it, and you're talking. No account, no server, no trace.</p>
+    <p class="lobby-sub">Share your invite link — with one person or a few (up to 4 in a group). Each time someone opens it you'll get a knock; accept it, and they're in. No account, no server, no trace.</p>
 
     <input id="nick-input" type="text" maxlength="24" placeholder="Your name (optional)" aria-label="Your display name" oninput="saveNick()" />
 
@@ -1179,7 +1179,7 @@
       </svg>
     </div>
     <div>
-      <div class="call-modal-name">Incoming chat request</div>
+      <div class="call-modal-name">Someone wants to join</div>
       <div class="call-modal-label" id="conn-modal-from">from peer</div>
     </div>
     <div class="call-modal-actions">
@@ -1217,17 +1217,45 @@
 
 <script>
 // ─── STATE ──────────────────────────────────────────────────────────────────
-let peer, conn, activeCall, localStream;
+let peer, activeCall, localStream;
 let muted = false;
 let pendingCall = null;
-let pendingConn = null;                 // incoming chat awaiting accept/decline
+let pendingConn = null;                 // a JOIN request awaiting host approval
 let connecting = false;                 // an outbound connect attempt is in flight
-let connOpened = false;                 // has the current data channel ever opened
+let connOpened = false;                 // has ANY data channel ever opened
 let connectAttempts = 0;                // invite auto-retry counter
-let isInitiator = false;                // true = we dialled out (must await Accept)
+let isInitiator = false;                // true = we dialled the host (await Accept)
 let chatEntered = false;                // are we actually inside the chat room
-let declinedByPeer = false;             // the other side declined our request
+let declinedByPeer = false;             // the host declined our request
 let tearingDown = false;                // we intentionally ended → ignore stray close events
+
+// ─── MESH (group) ────────────────────────────────────────────────────────────
+// Everyone holds a live data connection to everyone else. The host approves each
+// new joiner, then tells the joiner the roster (so it dials the others) and tells
+// the others about the joiner (so they accept its incoming dial).
+const peers    = new Map();   // peerId -> { id, conn, name, ready }
+const approved = new Set();   // peerIds we'll auto-accept a mesh dial from
+let   amHost   = false;       // did we create this group (not arrive via invite)
+let   callConn = null;        // the data connection of the 1:1 call peer (Stage 1)
+const MAX_PEERS = 3;          // up to 3 others → 4 people total
+
+const openConns  = () => [...peers.values()].filter(p => p.conn && p.conn.open);
+const anyOpen    = () => openConns().length > 0;
+const memberCount = () => openConns().length + 1;                 // incl. me
+const primaryConn = () => { const p = openConns()[0]; return p ? p.conn : null; };
+function broadcast(obj) {
+  const s = JSON.stringify(obj);
+  openConns().forEach(p => { try { p.conn.send(s); } catch {} });
+}
+function broadcastRaw(buf) {
+  openConns().forEach(p => { try { p.conn.send(buf); } catch {} });
+}
+// Highest send-buffer across all channels (used to pace file sending).
+function maxBuffered() {
+  let m = 0;
+  openConns().forEach(p => { const ch = p.conn.dataChannel || p.conn._dc; if (ch) m = Math.max(m, ch.bufferedAmount); });
+  return m;
+}
 let pendingMode = 'video';              // mode of the incoming call ('video'|'voice')
 let voiceMode = false;                  // call was started as voice-only
 let screenStream = null, sharing = false;
@@ -1371,16 +1399,24 @@ function initPeer() {
   });
 
   peer.on('connection', c => {
-    // Busy, or another request already pending → reject.
-    if ((conn && conn.open) || pendingConn) { c.close(); return; }
-    // Don't auto-accept: ask the user before joining a chat with a stranger.
+    if (peers.has(c.peer)) { c.close(); return; }          // already linked
+    if (openConns().length >= MAX_PEERS) { c.close(); return; } // group is full
+    const kind = (c.metadata && c.metadata.kind) || 'join';
+    // A mesh dial from someone the host already vetted (or any member while we're
+    // in an active session) is accepted silently — they're already in the group.
+    if (approved.has(c.peer) || (kind === 'mesh' && chatEntered)) {
+      approved.add(c.peer);
+      const rec = makeRec(c);
+      wireConn(rec, 'mesh');
+      return;
+    }
+    // Otherwise it's a brand-new JOIN request → ask the host to approve.
+    if (pendingConn) { c.close(); return; }                // already approving someone
     pendingConn = c;
     document.getElementById('conn-modal-from').textContent = c.peer;
     document.getElementById('conn-modal').style.display = 'flex';
-    // Ring + flash the tab title so you notice even from another tab.
     startRingtone();
-    startTitleAlert('🔔 Someone wants to chat');
-    // If they give up before you answer, stop ringing and clear the prompt.
+    startTitleAlert('🔔 Someone wants to join');
     c.on('close', () => {
       if (pendingConn !== c) return;
       pendingConn = null;
@@ -1418,36 +1454,53 @@ document.addEventListener('visibilitychange', () => {
   if (peer.destroyed)        initPeer();
   else if (peer.disconnected) peer.reconnect();
   // Resume an invite connection that never finished negotiating while hidden.
-  if (joinConfirmed && autoConnectId && (!conn || !conn.open)) {
+  if (joinConfirmed && autoConnectId && !anyOpen()) {
     connecting = false;                 // clear any stuck in-flight flag
     setTimeout(retryInvite, 600);       // give the signalling link a moment first
   }
 });
 
-// ─── LOBBY ───────────────────────────────────────────────────────────────────
+// ─── LOBBY / MESH DIALLING ───────────────────────────────────────────────────
+// Manual "Connect" or an invite link → we are JOINING a group: dial the host and
+// wait for them to approve us.
 function connectToPeer() {
   const id = document.getElementById('peer-input').value.trim();
   if (!id) return;
   if (!peer || !peer.id) { showToast('Still connecting to the signalling server…'); return; }
   if (id === peer.id) { showToast("That's your own ID — share it with someone else"); return; }
-  if (conn && conn.open) { showToast('Already connected'); return; }
+  if (peers.has(id)) { showToast('Already connected'); return; }
   if (connecting) return;                 // an attempt is already in flight
-  connecting = true; isInitiator = true;  // we dialled → we wait for their Accept
+  connecting = true; isInitiator = true;  // we dialled the host → we await Accept
   document.getElementById('status-txt').textContent = 'Connecting — waiting for them to accept…';
-  // serialization:'raw' lets us send ArrayBuffers directly for file chunks
-  conn = peer.connect(id, { reliable: true, serialization: 'raw' });
-  setupDataChannel();
+  dialPeer(id, 'join');
 }
 
-// Accept / decline an incoming chat request (consent before connecting).
+// Open a data connection to another peer. kind 'join' = dialling the host (gated
+// by their Accept); 'mesh' = connecting to a fellow member we were told about.
+function dialPeer(id, kind) {
+  if (!id || id === peer.id || peers.has(id)) return;
+  const c = peer.connect(id, { reliable: true, serialization: 'raw', metadata: { kind } });
+  const rec = makeRec(c);
+  wireConn(rec, kind === 'join' ? 'join' : 'mesh');
+}
+
+function makeRec(c) {
+  const rec = { id: c.peer, conn: c, name: '', ready: false };
+  peers.set(c.peer, rec);
+  return rec;
+}
+
+// Host approves an incoming JOIN request.
 function acceptConn() {
   stopRingtone(); stopTitleAlert();
   document.getElementById('conn-modal').style.display = 'none';
-  if (!pendingConn) return;
-  conn = pendingConn;
-  pendingConn = null;
-  isInitiator = false;          // we are the one accepting → we enter immediately
-  setupDataChannel();
+  const c = pendingConn; pendingConn = null;
+  if (!c) return;
+  if (peers.size >= MAX_PEERS) { try { c.close(); } catch {} showToast('Group is full'); return; }
+  amHost = true;
+  approved.add(c.peer);
+  const rec = makeRec(c);
+  wireConn(rec, 'accept');
 }
 
 function declineConn() {
@@ -1456,92 +1509,144 @@ function declineConn() {
   const c = pendingConn;
   pendingConn = null;
   if (!c) return;
-  // Tell the requester they were declined (their side is technically open),
-  // then close after a beat so the message flushes.
   try { if (c.open) c.send(JSON.stringify({ type: 'declined' })); } catch {}
   setTimeout(() => { try { c.close(); } catch {} }, 200);
 }
 
-function setupDataChannel() {
-  connOpened = false; chatEntered = false; declinedByPeer = false; troubleShown = false;
-  // Soft timeout: never hard-fail (and never while the tab is backgrounded —
-  // negotiation often stalls then). Just nudge the user; the channel can still
-  // open once the other side taps Accept.
+// Wire up one peer connection. role: 'join' (we dialled host, await Accept),
+// 'accept' (host approved a joiner), 'mesh' (member↔member, no gate).
+function wireConn(rec, role) {
+  const c = rec.conn;
+  declinedByPeer = false; troubleShown = false;
   const timeout = setTimeout(() => {
-    if (connOpened || !conn || conn.open || document.hidden) return;
+    if (rec.ready || c.open || document.hidden || role !== 'join') return;
     document.getElementById('status-txt').textContent = 'Still connecting… they may need to tap Accept';
     updateGateStatus('Still connecting… ask them to tap Accept');
   }, 20000);
 
   const onOpen = () => {
     clearTimeout(timeout);
-    connOpened = true; connecting = false; connectAttempts = 0;
-    // Force ArrayBuffer delivery for binary. The RTCDataChannel binaryType
-    // default differs across browsers ('blob' on some Firefox/Safari builds),
-    // which would otherwise break file-chunk parsing. This guarantees we get
-    // ArrayBuffers everywhere (Chrome/Firefox/Safari, desktop + mobile).
-    const channel = rawChannel();
-    if (channel) channel.binaryType = 'arraybuffer';
-    if (isInitiator) {
-      // The data channel is open at the WebRTC level, but the other person
-      // hasn't tapped Accept yet. WAIT — do not show the chat or let them type.
+    connOpened = true; connectAttempts = 0;
+    const ch = c.dataChannel || c._dc;
+    if (ch) ch.binaryType = 'arraybuffer';
+    if (role === 'join') {
+      // Open at the WebRTC level, but the host hasn't approved us yet. Wait.
+      connecting = false;
       document.getElementById('status-txt').textContent = 'Waiting for them to accept…';
       updateGateStatus('Waiting for them to accept…');
+    } else if (role === 'accept') {
+      // Host side: tell the joiner they're in, hand them the roster, and tell
+      // the existing members about them. Then treat them as a ready member.
+      try { c.send(JSON.stringify({ type: 'accepted' })); } catch {}
+      sendRoster(rec);
+      announceJoin(rec);
+      markReady(rec);
     } else {
-      // We're the one who accepted: enter now and tell the requester they're in.
-      try { conn.send(JSON.stringify({ type: 'accepted' })); } catch {}
-      enterChat();
+      markReady(rec);   // mesh link is live
     }
   };
-  // An accepted incoming connection may already be open by the time we attach
-  // handlers — in that case fire onOpen directly so we don't miss the event.
-  if (conn.open) onOpen(); else conn.on('open', onOpen);
+  if (c.open) onOpen(); else c.on('open', onOpen);
 
-  monitorIce(conn);   // surface a clear message if the P2P link can't be formed
+  monitorIce(c);
 
-  conn.on('data', raw => {
-    // Binary (file chunk) can arrive as ArrayBuffer, a typed-array view, or a
-    // Blob depending on the browser. Normalise all three before parsing.
-    if (raw instanceof ArrayBuffer)      { handleBinary(raw); return; }
-    if (ArrayBuffer.isView(raw))         { handleBinary(raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength)); return; }
-    if (typeof Blob !== 'undefined' && raw instanceof Blob) { raw.arrayBuffer().then(handleBinary); return; }
-    // Otherwise it's a control message (JSON string).
-    if (typeof raw !== 'string' || raw.length > MAX_MSG_CHARS + 1024) return;
-    let data;
-    try { data = JSON.parse(raw); } catch { return; }
-    if (!data || typeof data !== 'object') return;   // ignore non-object payloads
-    // Accept/decline handshake — only the dialler acts on these, and only msg/
-    // file traffic is processed once we've actually entered the chat.
-    if (data.type === 'accepted') { if (isInitiator) enterChat(); return; }
-    if (data.type === 'declined') { if (isInitiator) onDeclined(); return; }
-    if (isInitiator && !chatEntered) return;   // ignore anything before Accept
-    if      (data.type === 'msg')       receiveMessage(data);
-    else if (data.type === 'file-meta') receiveFileMeta(data);
-    else if (data.type === 'file-done') receiveFileDone(data);
-    else if (data.type === 'call-end')  hangUp(false);          // peer ended/declined the call
-    else if (data.type === 'media')   { remoteVideoActive = !!data.video; updateCallView(); }
-    else if (data.type === 'hello')   { peerName = (typeof data.name === 'string' ? data.name.replace(/[<>]/g, '').slice(0, 24) : ''); applyPeerName(); }
-    else if (data.type === 'typing')  { data.on ? showTyping() : hideTyping(); }
-    else if (data.type === 'ack')     { markDelivered(Number(data.ts)); }
-  });
+  c.on('data', raw => handleData(rec, raw));
+  c.on('close', () => onPeerClose(rec, timeout));
+  c.on('error', err => onPeerError(rec, timeout, err));
+}
 
-  conn.on('close', () => {
-    clearTimeout(timeout);
-    if (tearingDown) { conn = null; return; }   // we ended it on purpose
-    if (!connOpened) {           // negotiation died before it ever connected
-      connecting = false; conn = null;
-      handleNegotiationFail();   // retry (invite) instead of dumping to lobby
-      return;
-    }
-    conn = null;                 // an established session genuinely ended
-    hangUp(false);
-    resetToLobby('Peer disconnected — session ended');
-  });
-  conn.on('error', err => {
-    clearTimeout(timeout);
-    if (tearingDown) { conn = null; return; }
-    if (!connOpened) { connecting = false; conn = null; handleNegotiationFail(); }
-    else showToast('Connection error: ' + (err.message || err.type));
+// Promote a connection to a ready group member: send our name, enter the chat on
+// the first one, announce later joiners, refresh the roster.
+function markReady(rec) {
+  if (rec.ready) return;
+  rec.ready = true;
+  connecting = false;
+  try { rec.conn.send(JSON.stringify({ type: 'hello', name: myName || '' })); } catch {}
+  if (!chatEntered) enterChat();
+  else appendSystem((rec.name || rec.id) + ' joined');
+  updateRoster();
+}
+
+// Host → new member: the list of the OTHER current members, so it dials them.
+function sendRoster(rec) {
+  const others = openConns().filter(p => p !== rec).map(p => ({ id: p.id, name: p.name }));
+  try { rec.conn.send(JSON.stringify({ type: 'roster', members: others })); } catch {}
+}
+
+// Host → existing members: a new member joined; pre-approve their incoming dial.
+function announceJoin(rec) {
+  const note = JSON.stringify({ type: 'peer-join', id: rec.id, name: rec.name });
+  openConns().forEach(p => { if (p !== rec) { try { p.conn.send(note); } catch {} } });
+}
+
+function onPeerClose(rec, timeout) {
+  clearTimeout(timeout);
+  const wasReady = rec.ready;
+  peers.delete(rec.id);
+  if (tearingDown) return;
+  if (!wasReady) {                 // never connected: invite retry path
+    connecting = false;
+    if (!anyOpen() && !chatEntered) { handleNegotiationFail(); return; }
+    return;
+  }
+  if (anyOpen()) {                 // a member left, but the group lives on
+    appendSystem((rec.name || rec.id) + ' left');
+    if (activeCall && callConn && callConn.peer === rec.id) hangUp(false);
+    updateRoster();
+    return;
+  }
+  // The last peer left → end the session.
+  hangUp(false);
+  resetToLobby('Everyone left — session ended');
+}
+
+function onPeerError(rec, timeout, err) {
+  clearTimeout(timeout);
+  if (tearingDown) return;
+  if (!rec.ready) {
+    peers.delete(rec.id); connecting = false;
+    if (!anyOpen() && !chatEntered) handleNegotiationFail();
+  } else {
+    showToast('Connection error: ' + (err.message || err.type));
+  }
+}
+
+// Per-connection inbound handler. `rec` tells us WHO sent it.
+function handleData(rec, raw) {
+  if (raw instanceof ArrayBuffer)      { handleBinary(rec.id, raw); return; }
+  if (ArrayBuffer.isView(raw))         { handleBinary(rec.id, raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength)); return; }
+  if (typeof Blob !== 'undefined' && raw instanceof Blob) { raw.arrayBuffer().then(b => handleBinary(rec.id, b)); return; }
+  if (typeof raw !== 'string' || raw.length > MAX_MSG_CHARS + 1024) return;
+  let data;
+  try { data = JSON.parse(raw); } catch { return; }
+  if (!data || typeof data !== 'object') return;
+
+  // Handshake / membership control messages.
+  if (data.type === 'accepted') { markReady(rec); return; }      // host approved us
+  if (data.type === 'declined') { onDeclined(rec); return; }
+  if (data.type === 'roster')   { onRoster(data.members); return; }
+  if (data.type === 'peer-join'){ if (typeof data.id === 'string') approved.add(data.id); return; }
+  if (data.type === 'hello')    {
+    rec.name = (typeof data.name === 'string' ? data.name.replace(/[<>]/g, '').slice(0, 24) : '');
+    updateRoster(); return;
+  }
+  // Everything else requires us to be inside the chat.
+  if (!chatEntered) return;
+  if      (data.type === 'msg')       receiveMessage(rec, data);
+  else if (data.type === 'file-meta') receiveFileMeta(rec.id, data);
+  else if (data.type === 'file-done') receiveFileDone(rec.id, data);
+  else if (data.type === 'call-end')  hangUp(false);
+  else if (data.type === 'media')   { remoteVideoActive = !!data.video; updateCallView(); }
+  else if (data.type === 'typing')  { data.on ? showTyping(rec) : hideTyping(); }
+  else if (data.type === 'ack')     { markDelivered(Number(data.ts)); }
+}
+
+// We (a new member) got the roster from the host → dial each existing member.
+function onRoster(members) {
+  if (!Array.isArray(members)) return;
+  members.forEach(m => {
+    if (!m || typeof m.id !== 'string' || m.id === peer.id || peers.has(m.id)) return;
+    approved.add(m.id);
+    dialPeer(m.id, 'mesh');
   });
 }
 
@@ -1567,9 +1672,11 @@ function handleNegotiationFail() {
 
 function retryInvite() {
   if (!joinConfirmed || !autoConnectId) return;
-  if ((conn && conn.open) || connecting) return;
+  if (anyOpen() || connecting) return;
   if (!peer || !peer.id) return;            // not ready yet; peer 'open' will call us
-  if (conn && !conn.open) { try { conn.close(); } catch {} conn = null; }
+  // Drop any half-open dial to the host before retrying.
+  const stale = peers.get(autoConnectId);
+  if (stale && !stale.conn.open) { try { stale.conn.close(); } catch {} peers.delete(autoConnectId); }
   document.getElementById('peer-input').value = autoConnectId;
   connectToPeer();
 }
@@ -1604,66 +1711,67 @@ function showConnectTrouble() {
 
 // Reconstruct a tagged file chunk: [4-byte idLen][id bytes][payload].
 // Defensive against a malformed/hostile buffer (bad length prefix etc.).
-function handleBinary(buf) {
+function handleBinary(fromId, buf) {
   try {
     if (!(buf instanceof ArrayBuffer) || buf.byteLength < 4) return;
     const idLen = new DataView(buf).getUint32(0);
     if (idLen <= 0 || idLen > MAX_FILE_ID_BYTES || 4 + idLen > buf.byteLength) return;
     const id    = new TextDecoder().decode(new Uint8Array(buf, 4, idLen));
     const chunk = buf.slice(4 + idLen);
-    receiveFileChunk({ id, data: chunk });
+    receiveFileChunk(fromId, { id, data: chunk });
   } catch { /* ignore malformed chunk */ }
 }
-
-// Underlying RTCDataChannel (property name varies across PeerJS versions).
-const rawChannel = () => conn && (conn.dataChannel || conn._dc);
 
 function showApp() {
   document.getElementById('lobby').style.display = 'none';
   document.getElementById('app').style.display   = 'flex';
 }
 
-// Actually enter the chat room. For the dialler this only runs after the other
-// person taps Accept (an 'accepted' handshake message); the acceptor enters
-// the moment they accept. This guarantees nobody sees/uses the chat — or can
-// type into it — before the host has approved them.
+// Enter the chat room (once). For a joiner this runs after the host taps Accept;
+// the host enters when they approve the first member. Later joiners just appear
+// in the roster. Nobody can see/type in the chat before being approved.
 function enterChat() {
   if (chatEntered) return;
   chatEntered = true;
-  peerName = ''; lastSenderMine = null; clearUnread(); applyPeerName();
-  document.getElementById('connected-peer-id').textContent = conn ? conn.peer : '';
+  lastSenderMine = null; clearUnread();
   showApp();
   fadeOutInviteGate();
-  // Tell the other side our display name (if set).
-  if (myName && conn && conn.open) { try { conn.send(JSON.stringify({ type: 'hello', name: myName })); } catch {} }
+  updateRoster();
   appendSystem('Connected ✓');
   maybeFirstHint();   // one-time "say hello / start a call" nudge
   startStats();       // begin live connection-quality readout
 }
 
 // The host declined our request.
-function onDeclined() {
+function onDeclined(rec) {
+  if (rec) { try { rec.conn.close(); } catch {} peers.delete(rec.id); }
   declinedByPeer = true; connOpened = false; connecting = false;
-  try { if (conn) conn.close(); } catch {}
-  conn = null;
   document.getElementById('status-txt').textContent = 'They declined the chat';
   updateGateStatus('They declined the chat. Tap to try again.', true);
 }
 
-// User-initiated full disconnect. Closing conn notifies the peer (their
-// conn.on('close') fires) so both ends return to the lobby.
+// User-initiated full disconnect. Closing every connection notifies each peer
+// (their close handler fires) so everyone returns to the lobby.
 function endSession() {
   tearingDown = true;
-  if (conn) { try { conn.close(); } catch {} }
+  closeAllPeers();
   hangUp(false);
   resetToLobby('Session ended');
+}
+
+function closeAllPeers() {
+  peers.forEach(p => { try { p.conn.close(); } catch {} });
+  peers.clear();
+  approved.clear();
+  amHost = false;
 }
 
 // Tear everything down and go back to the lobby (reusable for a fresh session).
 function resetToLobby(note) {
   tearingDown = true;
   stopStats();
-  if (conn) { try { conn.close(); } catch {} conn = null; }
+  closeAllPeers();
+  callConn = null;
   for (const k in fileChunks) delete fileChunks[k];
   totalBuffered = 0;
   chatEntered = false; isInitiator = false; connecting = false; connOpened = false;
@@ -1724,7 +1832,7 @@ async function shareLink() {
 
 // After sharing the link, tell the host what to expect.
 function setWaiting() {
-  if (conn && conn.open) return;       // already connected — don't overwrite
+  if (anyOpen()) return;               // already connected — don't overwrite
   const t = document.getElementById('status-txt');
   if (t) t.textContent = 'Waiting for your friend to open the link…';
 }
@@ -1811,8 +1919,9 @@ function shareId() {
 }
 
 // ─── CHAT ────────────────────────────────────────────────────────────────────
-let myName = '', peerName = '';
+let myName = '';
 let lastSenderMine = null;          // message grouping: was the previous one mine?
+let lastSenderName = null;          // …and from which author (for group grouping)
 let unread = 0;                     // messages received while chat hidden in a call
 const ackEls = {};                  // ts → time element, for delivered ticks
 let typingSentAt = 0, typingOffTimer = null, typingHideTimer = null;
@@ -1826,9 +1935,26 @@ function saveNick() {
   myName = (i.value || '').replace(/[<>]/g, '').slice(0, 24);
   try { localStorage.setItem('p2p_nick', myName); } catch {}
 }
-function applyPeerName() {
-  const el = document.getElementById('peer-name');
-  if (el) el.textContent = peerName || 'Connected';
+// Display name for a peer (their chosen name, else a short id).
+function nameOf(rec) { return (rec && (rec.name || rec.id)) || 'Them'; }
+
+// Refresh the topbar: who's in the group and how many.
+function updateRoster() {
+  const ready = openConns();
+  const names = ready.map(p => p.name || (p.id.slice(0, 6) + '…'));
+  const titleEl = document.getElementById('peer-name');
+  const subEl   = document.getElementById('connected-peer-id');
+  const n = ready.length + 1;   // include me
+  if (titleEl) {
+    titleEl.textContent = (n <= 2)
+      ? (names[0] || 'Connected')
+      : ('Group · ' + n + ' people');
+  }
+  if (subEl) {
+    subEl.textContent = (n <= 2)
+      ? (ready[0] ? ready[0].id : '')
+      : (['You', ...names].join(', '));
+  }
 }
 
 // ─── CONNECTION MODE (Relay vs P2P) ──────────────────────────────────────────
@@ -1868,21 +1994,22 @@ function applyConnMode() {
 function sendMessage() {
   const inp  = document.getElementById('msg-input');
   const text = inp.value.trim();
-  if (!text || !conn?.open || !chatEntered) return;
+  if (!text || !anyOpen() || !chatEntered) return;
   const ts = Date.now();
-  try { conn.send(JSON.stringify({ type: 'msg', text, ts })); } catch { return; }
+  broadcast({ type: 'msg', text, ts });   // fan out to every member
   sendTyping(false);
   appendMessage(text, true, ts);
   inp.value = ''; inp.style.height = '';
 }
 
-function receiveMessage({ text, ts }) {
+function receiveMessage(rec, { text, ts }) {
   if (typeof text !== 'string' || !text) return;
   if (text.length > MAX_MSG_CHARS) text = text.slice(0, MAX_MSG_CHARS) + '…';
   const t = Number(ts);
-  appendMessage(text, false, Number.isFinite(t) ? t : Date.now());
+  appendMessage(text, false, Number.isFinite(t) ? t : Date.now(), nameOf(rec));
   hideTyping();
-  if (conn && conn.open && Number.isFinite(t)) { try { conn.send(JSON.stringify({ type: 'ack', ts: t })); } catch {} }
+  // Ack only the sender (delivered tick).
+  if (rec.conn && rec.conn.open && Number.isFinite(t)) { try { rec.conn.send(JSON.stringify({ type: 'ack', ts: t })); } catch {} }
   notifyChime();
   bumpUnread();
 }
@@ -1893,15 +2020,17 @@ function linkify(text) {
     u => `<a href="${u}" target="_blank" rel="noopener noreferrer">${u}</a>`);
 }
 
-function appendMessage(text, mine, ts) {
+function appendMessage(text, mine, ts, who) {
+  const sender = mine ? (myName || 'You') : (who || 'Them');
   const wrap = el('div', 'msg ' + (mine ? 'mine' : 'theirs'));
-  if (lastSenderMine === mine) wrap.classList.add('grouped');   // tighten same-sender runs
+  // Group only consecutive messages from the SAME author (track last sender name).
+  if (lastSenderMine === mine && lastSenderName === sender) wrap.classList.add('grouped');
   else {
-    const who = el('div', 'msg-who');
-    who.textContent = mine ? (myName || 'You') : (peerName || 'Them');
-    wrap.appendChild(who);
+    const w = el('div', 'msg-who');
+    w.textContent = sender;
+    wrap.appendChild(w);
   }
-  lastSenderMine = mine;
+  lastSenderMine = mine; lastSenderName = sender;
   const bubble = el('div', 'bubble');
   bubble.innerHTML = linkify(text);
   const time = el('div', 'msg-time');
@@ -1918,7 +2047,7 @@ function markDelivered(ts) {
 }
 
 function appendSystem(txt) {
-  lastSenderMine = null;              // a system line breaks message grouping
+  lastSenderMine = null; lastSenderName = null;   // a system line breaks grouping
   const d = el('div', 'system-msg');
   d.textContent = txt;
   msgs().appendChild(d);
@@ -1935,7 +2064,7 @@ function autoResize(textarea) {
 
 // ── typing indicator ──
 function onTyping() {
-  if (!conn?.open || !chatEntered) return;
+  if (!anyOpen() || !chatEntered) return;
   const now = Date.now();
   if (now - typingSentAt > 1500) { sendTyping(true); }
   clearTimeout(typingOffTimer);
@@ -1943,11 +2072,11 @@ function onTyping() {
 }
 function sendTyping(on) {
   typingSentAt = on ? Date.now() : 0;
-  if (conn && conn.open) { try { conn.send(JSON.stringify({ type: 'typing', on: !!on })); } catch {} }
+  broadcast({ type: 'typing', on: !!on });
 }
-function showTyping() {
+function showTyping(rec) {
   const t = document.getElementById('typing-ind'); if (!t) return;
-  t.textContent = (peerName || 'They') + ' is typing…';
+  t.textContent = nameOf(rec) + ' is typing…';
   t.style.display = '';
   clearTimeout(typingHideTimer);
   typingHideTimer = setTimeout(hideTyping, 4000);   // safety auto-hide
@@ -2001,24 +2130,24 @@ function sendFile(input) {
   input.value = '';
 }
 
-// Resolves once the data channel has drained below the high-water mark.
+// Resolves once EVERY open channel has drained below the high-water mark.
 function waitForDrain() {
-  const channel = rawChannel();
-  if (!channel || channel.bufferedAmount < BUFFER_HIGH) return Promise.resolve();
+  if (maxBuffered() < BUFFER_HIGH) return Promise.resolve();
   return new Promise(resolve => {
     const check = () => {
-      if (!conn?.open || rawChannel()?.bufferedAmount < BUFFER_HIGH) resolve();
+      if (!anyOpen() || maxBuffered() < BUFFER_HIGH) resolve();
       else setTimeout(check, 50);
     };
     check();
   });
 }
 
+// Send a file to EVERY member (fan-out over the mesh).
 async function sendOneFile(file) {
-  if (!conn?.open || !chatEntered) return;
+  if (!anyOpen() || !chatEntered) return;
   const id      = rand();
   const idBytes = new TextEncoder().encode(id);
-  conn.send(JSON.stringify({ type: 'file-meta', id, name: file.name, size: file.size, mime: file.type }));
+  broadcast({ type: 'file-meta', id, name: file.name, size: file.size, mime: file.type });
   const ref = appendFileBubble(true);
   fileProgress(ref, file.name, file.size, 0, 'Sending');
   let offset = 0;
@@ -2031,20 +2160,26 @@ async function sendOneFile(file) {
       new Uint8Array(tagged, 4, idBytes.byteLength).set(idBytes);
       new Uint8Array(tagged, 4 + idBytes.byteLength).set(new Uint8Array(payload));
       await waitForDrain();
-      if (!conn?.open) { showToast('Transfer cancelled — peer disconnected'); return; }
-      conn.send(tagged);
+      if (!anyOpen()) { showToast('Transfer cancelled — everyone disconnected'); return; }
+      broadcastRaw(tagged);
       offset += payload.byteLength;
       fileProgress(ref, file.name, file.size, file.size ? offset / file.size : 1, 'Sending');
     }
-    conn.send(JSON.stringify({ type: 'file-done', id }));
+    broadcast({ type: 'file-done', id });
     fileDone(ref, file.name, file.size, makeObjectUrl(file), file.type);   // sender keeps a copy/link too
   } catch (e) {
     showToast('Failed to send ' + file.name);
   }
 }
 
-function receiveFileMeta({ id, name, size, mime }) {
-  if (typeof id !== 'string' || !id || fileChunks[id]) return;     // bad/duplicate id
+// Incoming files are keyed by sender+id so two members can send at once without
+// their transfers colliding.
+const fkey = (fromId, id) => fromId + '|' + id;
+
+function receiveFileMeta(fromId, { id, name, size, mime }) {
+  if (typeof id !== 'string' || !id) return;
+  const key = fkey(fromId, id);
+  if (fileChunks[key]) return;                                     // duplicate
   if (Object.keys(fileChunks).length >= MAX_CONCURRENT) {
     appendSystem('⚠️ Too many incoming files at once — one was rejected.');
     return;
@@ -2055,47 +2190,51 @@ function receiveFileMeta({ id, name, size, mime }) {
     appendSystem('⚠️ Rejected an oversized incoming file (' + fmtSize(safeSize) + ').');
     return;
   }
+  const who = nameOf(peers.get(fromId));
   const meta = {
     name:  (typeof name === 'string' ? name : 'file').slice(0, MAX_NAME_CHARS),
     size:  safeSize,
     mime:  typeof mime === 'string' ? mime : '',
     chunks: [], received: 0,
   };
+  if (memberCount() > 2) appendSystem(who + ' is sending a file…');
   meta.ref = appendFileBubble(false);          // show the incoming bubble now, with progress
   fileProgress(meta.ref, meta.name, meta.size, 0, 'Receiving');
-  fileChunks[id] = meta;
+  fileChunks[key] = meta;
 }
 
-function receiveFileChunk({ id, data }) {
-  const info = fileChunks[id];
+function receiveFileChunk(fromId, { id, data }) {
+  const key = fkey(fromId, id);
+  const info = fileChunks[key];
   if (!info || !(data instanceof ArrayBuffer)) return;
   info.received += data.byteLength;
   totalBuffered += data.byteLength;
   const perFileLimit = info.size > 0 ? info.size + CHUNK : MAX_FILE_BYTES;
   if (info.received > perFileLimit || info.received > MAX_FILE_BYTES || totalBuffered > MAX_TOTAL_BUFFERED) {
     appendSystem('⚠️ Aborted an incoming file that exceeded the size limit.');
-    abortIncoming(id);
+    abortIncoming(key);
     return;
   }
   info.chunks.push(data);
   if (info.ref && info.size) fileProgress(info.ref, info.name, info.size, Math.min(0.99, info.received / info.size), 'Receiving');
 }
 
-function abortIncoming(id) {
-  const info = fileChunks[id];
+function abortIncoming(key) {
+  const info = fileChunks[key];
   if (!info) return;
   totalBuffered -= info.received;
-  delete fileChunks[id];
+  delete fileChunks[key];
 }
 
-function receiveFileDone({ id }) {
-  const info = (typeof id === 'string') ? fileChunks[id] : null;
+function receiveFileDone(fromId, { id }) {
+  const key = (typeof id === 'string') ? fkey(fromId, id) : null;
+  const info = key ? fileChunks[key] : null;
   if (!info) return;
   const url = makeObjectUrl(new Blob(info.chunks, { type: info.mime }));
   fileDone(info.ref, info.name, info.size, url, info.mime);
   notifyChime();                          // audible incoming-file cue
   totalBuffered -= info.received;
-  delete fileChunks[id];
+  delete fileChunks[key];
 }
 
 // Track blob: URLs so they can be revoked (avoids leaking memory over a session).
@@ -2273,13 +2412,17 @@ function initVideoState() {
 }
 
 async function startCall(mode) {
-  if (!conn?.open) { showToast('Not connected to a peer'); return; }
+  const c = primaryConn();
+  if (!c) { showToast('Not connected to a peer'); return; }
   if (activeCall) { showToast('Already in a call'); return; }
+  // Stage 1: calls are still 1-to-1. Group video/voice is coming next.
+  if (memberCount() > 2) { showToast('Group calls are coming soon — calls work in 2-person chats for now'); return; }
+  callConn = c;
   voiceMode = (mode === 'voice');
   localStream = await getMedia(mode);
   initVideoState();
   playInVideo('local-video', localStream);
-  activeCall = peer.call(conn.peer, localStream, { metadata: { mode: voiceMode ? 'voice' : 'video' } });
+  activeCall = peer.call(c.peer, localStream, { metadata: { mode: voiceMode ? 'voice' : 'video' } });
   setupCallHandlers(activeCall);
   showCallUI(true);
   signalMedia(videoActive);
@@ -2292,6 +2435,7 @@ async function answerCall() {
   stopRingtone(); stopTitleAlert();
   document.getElementById('call-modal').classList.remove('visible');
   if (!pendingCall) return; // caller hung up before we answered
+  callConn = (peers.get(pendingCall.peer) || {}).conn || primaryConn();
   voiceMode = (pendingMode === 'voice');   // match the caller's chosen mode
   localStream = await getMedia(pendingMode);
   initVideoState();
@@ -2309,7 +2453,8 @@ async function answerCall() {
 
 function rejectCall() {
   // Tell the caller so their ringing/calling state ends too.
-  if (conn && conn.open) { try { conn.send(JSON.stringify({ type: 'call-end' })); } catch {} }
+  const c = (pendingCall && peers.get(pendingCall.peer) || {}).conn;
+  if (c && c.open) { try { c.send(JSON.stringify({ type: 'call-end' })); } catch {} }
   stopRingtone(); stopTitleAlert();
   document.getElementById('call-modal').classList.remove('visible');
   if (pendingCall) { try { pendingCall.close(); } catch {} pendingCall = null; }
@@ -2327,9 +2472,10 @@ function setupCallHandlers(call) {
 // This is the reliable termination path (PeerJS media 'close' is unreliable).
 function hangUp(notify = true) {
   const wasActive = !!activeCall || !!localStream || !!pendingCall;
-  if (notify && conn && conn.open && wasActive) {
-    try { conn.send(JSON.stringify({ type: 'call-end' })); } catch {}
+  if (notify && callConn && callConn.open && wasActive) {
+    try { callConn.send(JSON.stringify({ type: 'call-end' })); } catch {}
   }
+  callConn = null;
   stopRingtone(); stopTitleAlert(); stopRingback(); stopCallTimer();
   document.getElementById('call-modal').classList.remove('visible');
   if (pendingCall) { try { pendingCall.close(); } catch {} pendingCall = null; }
@@ -2347,7 +2493,7 @@ function hangUp(notify = true) {
 }
 
 function signalMedia(on) {
-  if (conn && conn.open) { try { conn.send(JSON.stringify({ type: 'media', video: !!on })); } catch {} }
+  if (callConn && callConn.open) { try { callConn.send(JSON.stringify({ type: 'media', video: !!on })); } catch {} }
 }
 
 // Show the video panel when EITHER side is sending real video; otherwise the
@@ -2355,7 +2501,10 @@ function signalMedia(on) {
 function updateCallView() {
   const showVideo = !!activeCall && (videoActive || remoteVideoActive);
   document.getElementById('app').classList.toggle('voice-mode', !!activeCall && !showVideo);
-  if (activeCall && !showVideo) document.getElementById('voice-peer').textContent = conn ? conn.peer : '';
+  if (activeCall && !showVideo) {
+    const r = callConn && peers.get(callConn.peer);
+    document.getElementById('voice-peer').textContent = r ? nameOf(r) : '';
+  }
 }
 
 // ─── LIVE CONNECTION STATS ───────────────────────────────────────────────────
@@ -2375,7 +2524,8 @@ function toggleStats() {
   const p = document.getElementById('stats-panel'); if (p) p.classList.toggle('show');
 }
 function activePc() {
-  return (activeCall && activeCall.peerConnection) || (conn && conn.peerConnection) || null;
+  const c = primaryConn();
+  return (activeCall && activeCall.peerConnection) || (c && c.peerConnection) || null;
 }
 
 async function pollStats() {
